@@ -22,12 +22,11 @@ import time
 from pathlib import Path
 from typing import Callable, Deque, List, Optional
 
-from swarm_advice import EFFORTS, assign_efforts, planner_brief, recommend
+from swarm_advice import EFFORTS, MODELS, assign_efforts, phase_budget, planner_brief, recommend
 import swarm_publish as pub
 from swarm_core import CLAUDE_MISSING, ENV_STRIP, MAX_WORKERS, Swarm, describe_tool, find_claude, git, git_id, short
 
 STAGES = ("idle", "planning", "review", "running", "done", "stopped", "failed")
-MODELS = ("haiku", "sonnet", "opus")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,30}$")
 
 # comandi sempre permessi agli agenti (solo lettura su git)
@@ -162,6 +161,8 @@ def validate_plan(plan: dict, max_workers: int = MAX_WORKERS) -> dict:
         eff = ph.get("effort")
         if eff in EFFORTS or eff == "":
             item["effort"] = eff  # "" = effort predefinito di Claude Code
+        if ph.get("model") in MODELS:
+            item["model"] = ph["model"]
         out["phases"].append(item)
     return out
 
@@ -312,7 +313,8 @@ class Project:
             if self.stop_requested:
                 self.stage = "idle"
                 return
-            plan = assign_efforts(validate_plan(extract_json(raw), self._cap()), self.advice)
+            plan = assign_efforts(validate_plan(extract_json(raw), self._cap()), self.advice,
+                                  self.settings["model"])
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
@@ -450,8 +452,8 @@ class Project:
         if self.stage not in ("review",):
             raise ValueError("non c'è un piano pronto da avviare")
         if plan is not None:
-            self.plan = assign_efforts(validate_plan(plan, self._cap()), self.advice) if self.advice \
-                else validate_plan(plan, self._cap())
+            plan = validate_plan(plan, self._cap())
+            self.plan = assign_efforts(plan, self.advice, self.settings.get("model")) if self.advice else plan
         self.stage = "running"
         self.stop_requested = False
         self.started_at = time.time()
@@ -503,15 +505,21 @@ class Project:
                     "e controlla che tutto torni. Poi fai il tuo compito.")
                 tools += MERGE_TOOLS
                 carry = []
+            model = ph.get("model") or s.get("model") or ""
+            budget = s.get("budget") or 0
+            if budget and model in MODELS and s.get("model") in MODELS:
+                budget = phase_budget(budget, model, s["model"])
             cfg = {"repo": str(self.repo) if self.repo else "", "run_id": f"{stamp}-f{i + 1}",
                    "goal": f"{self.plan.get('goal') or s.get('idea', '')} — fase {i + 1} di {n}: {ph['name']}",
-                   "model": s.get("model") or None,
+                   "model": model or None,
                    "permission_mode": s.get("permission_mode") or "acceptEdits",
-                   "max_budget_usd": s.get("budget") or None, "allowed_tools": tools,
+                   "max_budget_usd": budget or None, "allowed_tools": tools,
                    "effort": ph.get("effort") or None,
                    "workers": workers}
             self.bus("orchestrator", "all", f"fase {i + 1}/{n} · {ph['name']} · {len(workers)} agent{'e' if len(workers) == 1 else 'i'}"
-                     + (f" · effort {ph['effort']}" if ph.get("effort") else ""), "info")
+                     + (f" · {model}" if model else "")
+                     + (f" · effort {ph['effort']}" if ph.get("effort") else "")
+                     + (f" · fino a ${budget:g} per agente" if budget else ""), "info")
             core = Swarm(cfg, demo=self.demo)
             core.listeners.append(self._forward)
             self.core = core

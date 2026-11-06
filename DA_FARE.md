@@ -4,6 +4,25 @@ Niente in sospeso.
 
 ## Fatto
 
+### Modello per fase (6 novembre 2026)
+
+Prima tutte le fasi usavano lo stesso modello. Con "Complessa + rifinita" erano
+9 agenti su Opus, con un tetto di $90. Ora Opus resta solo su Fondamenta e
+Integrazione, mentre Sviluppo e Revisione passano a Sonnet. Il tetto scende a $48.
+
+- `swarm_advice.py`: `phase_model` (Opus → Sonnet fuori da fondamenta e
+  integrazione) e `phase_budget` (la spesa per agente scende in proporzione al
+  modello, mai sopra quella scelta). `recommend` mette modello e spesa su ogni
+  fase; `assign_efforts` assegna anche il modello, partendo da quello scelto
+  nel modulo.
+- `swarm_project.py`: il piano accetta `model` per fase e ogni fase parte con il
+  suo modello e il suo tetto di spesa.
+- `web/index.html`: modello accanto all'effort nei consigli; nel piano un menu
+  modello per fase, con riepilogo e spesa massima che si aggiornano.
+- Provato in demo, sia su desktop sia a 375px: il modello cambiato a mano viene
+  tenuto e la fase su Sonnet parte con $4 per agente. Non l'ho provato con
+  agenti veri.
+
 ### Esempi di risultato per ogni casella della matrice (6 novembre 2026)
 
 Nella schermata "Cosa costruiamo?", sotto la matrice "La squadra", il pulsante

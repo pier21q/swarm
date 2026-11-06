@@ -18,6 +18,10 @@ from __future__ import annotations
 from typing import Dict, List
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+MODELS = ("haiku", "sonnet", "opus")
+MODEL_IT = {"haiku": "Haiku", "sonnet": "Sonnet", "opus": "Opus"}
+# fasi dove si decide (struttura) e dove si ricuce (integrazione): qui serve il modello più capace
+STRONG_ROLES = ("fondamenta", "integrazione")
 EFFORT_IT = {"low": "basso", "medium": "medio", "high": "alto", "xhigh": "molto alto", "max": "massimo"}
 
 DIFFICULTY = {
@@ -67,6 +71,23 @@ def _effort(role: str, d: int, q: int) -> str:
     return EFFORTS[max(0, min(3, i))]  # "max" mai di default: costa tanto e rende poco in più
 
 
+def phase_model(role: str, model: str) -> str:
+    """Con Opus, sviluppo e revisione passano a Sonnet: lavorano su compiti già definiti
+    da INTERFACCE.md, dove Sonnet basta e costa meno. Le altre scelte restano uguali."""
+    if model == "opus" and role not in STRONG_ROLES:
+        return "sonnet"
+    return model
+
+
+def phase_budget(budget: float, model: str, project_model: str) -> float:
+    """Spesa massima per agente in una fase: scende in proporzione se la fase usa un modello
+    più economico di quello del progetto, ma non sale mai sopra quella scelta dall'utente."""
+    a, b = MODEL_BUDGET.get(model), MODEL_BUDGET.get(project_model)
+    if not a or not b or a >= b:
+        return budget
+    return min(budget, max(0.5, int(budget * a / b * 2 + 0.5) / 2))  # come Math.round nella pagina
+
+
 def recommend(difficulty: int, quality: int) -> dict:
     d, q = _clamp(difficulty), _clamp(quality)
     dev = DEV_AGENTS[d][q]
@@ -91,13 +112,18 @@ def recommend(difficulty: int, quality: int) -> dict:
     model = "haiku" if score == 2 else "opus" if score == 6 else "sonnet"
     top = max(EFFORTS.index(p["effort"]) for p in phases)
     budget = max(0.3, round(MODEL_BUDGET[model] * EFFORT_COST[EFFORTS[top]] * 2) / 2)
+    for p in phases:
+        p["model"] = phase_model(p["role"], model)
+        p["budget"] = phase_budget(budget, p["model"], model)
     total = sum(p["agents"] for p in phases)
 
     notes = []
     if model == "haiku":
         notes.append("Haiku basta: il progetto è piccolo e serve solo che funzioni.")
     elif model == "opus":
-        notes.append("Opus: progetto grande e risultato curato, conviene il modello più capace.")
+        notes.append("Opus per fondamenta e integrazione, dove si decide la struttura e si ricuce "
+                     "tutto. Sviluppo e revisione usano Sonnet: i compiti sono già definiti, Sonnet "
+                     "basta e il tetto di spesa per quegli agenti scende.")
     else:
         notes.append("Sonnet è il miglior compromesso tra capacità e costo per questo livello.")
     if review:
@@ -111,7 +137,7 @@ def recommend(difficulty: int, quality: int) -> dict:
 
     return {"difficulty": d, "quality": q, "model": model, "budget": budget,
             "max_workers": max(dev, review, 1), "phases": phases, "total_agents": total,
-            "max_cost": round(total * budget, 2), "allow_build": q >= 2 and d >= 2,
+            "max_cost": round(sum(p["agents"] * p["budget"] for p in phases), 2), "allow_build": q >= 2 and d >= 2,
             "planner_effort": "medium" if d == 1 else "high", "notes": notes}
 
 
@@ -128,15 +154,19 @@ def phase_role(name: str, i: int, n: int) -> str:
     return "sviluppo"
 
 
-def assign_efforts(plan: dict, rec: dict) -> dict:
-    """Mette l'effort consigliato su ogni fase che non ne ha già uno valido."""
+def assign_efforts(plan: dict, rec: dict, model: str = "") -> dict:
+    """Mette effort e modello consigliati su ogni fase che non ne ha già uno valido.
+    Il modello parte da quello scelto per il progetto (`model`), non da quello consigliato."""
     by_role: Dict[str, str] = {p["role"]: p["effort"] for p in rec["phases"]}
+    model = model if model in MODELS else rec["model"]
     phases = plan.get("phases") or []
     for i, ph in enumerate(phases):
         role = phase_role(ph.get("name", ""), i, len(phases))
         ph["role"] = role
         if ph.get("effort") not in EFFORTS and ph.get("effort") != "":
             ph["effort"] = by_role.get(role) or by_role.get("sviluppo", "medium")
+        if ph.get("model") not in MODELS:
+            ph["model"] = phase_model(role, model)
     return plan
 
 
@@ -166,5 +196,6 @@ def advice_table() -> dict:
         "difficulty": {k: {"label": a, "hint": b} for k, (a, b) in DIFFICULTY.items()},
         "quality": {k: {"label": a, "hint": b} for k, (a, b) in QUALITY.items()},
         "efforts": list(EFFORTS), "effort_it": EFFORT_IT,
+        "models": list(MODELS), "model_budget": MODEL_BUDGET, "strong_roles": list(STRONG_ROLES),
         "table": {f"{d}-{q}": recommend(d, q) for d in (1, 2, 3) for q in (1, 2, 3)},
     }

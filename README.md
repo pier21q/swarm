@@ -45,13 +45,19 @@ Si apre il browser su http://localhost:8765 (o sulla prima porta libera dopo).
    si rifà solo se cambi l'idea. In demo gli esempi sono finti e gratis.
    Puoi comunque cambiare modello, spesa massima per agente, quanti agenti in
    parallelo e se possono lanciare comandi di build/test.
+   Se scegli Opus, swarm lo usa solo per Fondamenta e Integrazione, dove si
+   decide la struttura e si ricuce tutto. Sviluppo e Revisione usano Sonnet,
+   che basta per compiti già definiti, e per quegli agenti la spesa massima
+   scende in proporzione (con Opus a $10, gli agenti su Sonnet hanno $4).
 2. **Il piano**: il pianificatore propone di solito tre fasi.
    - *Fondamenta* (1 agente): struttura del progetto e un file
      `INTERFACCE.md` che descrive come si parlano i pezzi.
    - *Sviluppo* (più agenti in parallelo): ognuno su file diversi.
    - *Integrazione* (1 agente): collega tutto e scrive come avviarlo.
-   Accanto a ogni fase c'è il suo effort (quanto ragionano gli agenti: basso,
-   medio, alto, molto alto, massimo) e quanti agenti sono consigliati.
+   Accanto a ogni fase ci sono il suo modello, il suo effort (quanto ragionano
+   gli agenti: basso, medio, alto, molto alto, massimo) e quanti agenti sono
+   consigliati. Puoi cambiare il modello di ogni fase: la spesa massima in
+   alto si aggiorna.
    Puoi cambiare ogni compito, aggiungere o togliere agenti, oppure scrivere
    cosa non ti convince e premere "Rifai il piano".
 3. **Avvia**: le fasi partono una dopo l'altra. A fine fase swarm unisce i
@@ -103,5 +109,6 @@ Stesso flusso con pianificatore e agenti finti: non crea niente su disco.
   build/test.
 - La spesa massima vale per ogni agente: con 5 agenti a $2 il tetto è $10
   (più pochi centesimi per il pianificatore e meno di un centesimo per gli
-  esempi della matrice). Con un abbonamento Claude il
+  esempi della matrice). Una fase con un modello più economico di quello del
+  progetto ha un tetto più basso, mai più alto. Con un abbonamento Claude il
   costo mostrato è una stima e i limiti d'uso si consumano più in fretta.

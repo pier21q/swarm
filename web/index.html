@@ -149,6 +149,8 @@ code { background: var(--panel-2); border: 1px solid var(--line); border-radius:
 .form-foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
 
 .phase-head select { width: auto; padding: 4px 8px; font-size: 12px; margin-left: auto; }
+.phase-head select + select { margin-left: 0; }
+.dd-line { display: block; }
 .phase-head .kind.off { color: var(--amber); }
 
 /* ── pianificazione ─────────────────────────────────────── */
@@ -815,6 +817,7 @@ body[data-studio] .done-actions { margin-top: 40px; align-items: center; gap: 12
                 <option value="sonnet" selected>Sonnet: equilibrato</option>
                 <option value="opus">Opus: il più capace</option>
               </select>
+              <div class="hint" id="fModelHint">Con Opus, sviluppo e revisione usano Sonnet. Nel piano puoi cambiare il modello di ogni fase.</div>
             </div>
             <div class="field">
               <label class="f" for="fBudget">Spesa massima per agente, in dollari</label>
@@ -1056,6 +1059,20 @@ let ADV = null, advD = 2, advQ = 2;
 const EFF_IT = { low: "basso", medium: "medio", high: "alto", xhigh: "molto alto", max: "massimo" };
 const EFF_LIST = ["low", "medium", "high", "xhigh", "max"];
 const MODEL_IT = { haiku: "Haiku", sonnet: "Sonnet", opus: "Opus" };
+/* modello e spesa per fase: stesse regole di swarm_advice.py */
+function phaseModel(role, model) {
+  const strong = (ADV && ADV.strong_roles) || ["fondamenta", "integrazione"];
+  return model === "opus" && !strong.includes(role) ? "sonnet" : model;
+}
+function phaseBudget(budget, model, projModel) {
+  const mb = (ADV && ADV.model_budget) || { haiku: 0.5, sonnet: 2, opus: 5 };
+  const a = mb[model], b = mb[projModel];
+  if (!a || !b || a >= b) return budget;
+  return Math.min(budget, Math.max(0.5, Math.round(budget * a / b * 2) / 2));
+}
+function modelsLabel(models) {
+  return [...new Set(models.filter(Boolean))].map((m) => MODEL_IT[m] || m).join(" + ");
+}
 function curRec() { return ADV ? ADV.table[`${advD}-${advQ}`] : null; }
 function swarmDots(phases, cls) {
   const box = el("span", cls || "swarm");
@@ -1066,13 +1083,13 @@ function swarmDots(phases, cls) {
   }
   return box;
 }
-function effMeter(eff) {
+function effMeter(eff, model) {
   const m = el("span", "eff");
   const lvl = EFF_LIST.indexOf(eff) + 1;
   const bars = el("span", "eff-bars");
   bars.setAttribute("aria-hidden", "true");
   for (let k = 1; k <= 4; k++) bars.append(el("i", k <= lvl ? "on" : ""));
-  m.append(bars, el("span", null, `effort ${EFF_IT[eff] || eff}`));
+  m.append(bars, el("span", null, (model ? `${MODEL_IT[model] || model} · ` : "") + `effort ${EFF_IT[eff] || eff}`));
   return m;
 }
 function buildMatrix() {
@@ -1093,7 +1110,7 @@ function buildMatrix() {
       c.type = "button";
       c.dataset.d = d; c.dataset.q = q;
       c.setAttribute("role", "radio");
-      c.setAttribute("aria-label", `${ADV.difficulty[d].label}, ${ADV.quality[q].label.toLowerCase()}: ${r.total_agents} agenti, ${MODEL_IT[r.model]}, fino a ${fmtCost(r.max_cost)}`);
+      c.setAttribute("aria-label", `${ADV.difficulty[d].label}, ${ADV.quality[q].label.toLowerCase()}: ${r.total_agents} agenti, ${modelsLabel(r.phases.map((p) => p.model))}, fino a ${fmtCost(r.max_cost)}`);
       const meta = el("span", "mx-meta");
       meta.append(el("b", null, MODEL_IT[r.model]), el("span", null, `fino a ${fmtCost(r.max_cost)}`));
       c.append(swarmDots(r.phases), el("span", "mx-ex"), meta);
@@ -1144,14 +1161,23 @@ function renderAdvice() {
     const li = el("li", "pl-step");
     const top = el("div", "pl-top");
     top.append(el("b", null, ph.name), swarmDots([ph], "swarm small"));
-    li.append(top, effMeter(ph.effort), el("p", null, ph.why));
+    li.append(top, effMeter(ph.effort, ph.model), el("p", null, ph.why));
     flow.append(li);
   }
   const meta = $("#advMeta");
   meta.replaceChildren();
-  const add = (k, v) => { const d = el("div"); d.append(el("dt", null, k), el("dd", null, v)); meta.append(d); };
-  add("Modello", MODEL_IT[r.model]);
-  add("Per agente", `fino a ${fmtCost(r.budget)}`);
+  const add = (k, v) => {
+    const d = el("div"), dd = el("dd");
+    for (const line of [].concat(v)) dd.append(el("span", "dd-line", line));
+    d.append(el("dt", null, k), dd);
+    meta.append(d);
+  };
+  const per = [];
+  for (const p of r.phases) if (!per.some((x) => x.model === p.model)) per.push(p);
+  add("Modello", per.map((p) => MODEL_IT[p.model]));
+  add("Per agente", per.length > 1
+    ? per.map((p) => `${fmtCost(p.budget)} ${MODEL_IT[p.model]}`)
+    : `fino a ${fmtCost(r.budget)}`);
   add("In tutto", `fino a ${fmtCost(r.max_cost)}`);
   $("#advNotes").replaceChildren(...r.notes.map((t) => el("li", null, t)));
   const ok = adviceMatches(r);
@@ -1587,6 +1613,14 @@ function phaseEditor(ph, i) {
   const name = el("input", "ph-name");
   name.type = "text"; name.value = ph.name; name.setAttribute("aria-label", `Nome della fase ${i + 1}`);
   const kind = el("span", "kind");
+  const s = P.settings || {};
+  const mod = el("select", "ph-model");
+  mod.setAttribute("aria-label", `Modello della fase ${i + 1}`);
+  mod.append(...["haiku", "sonnet", "opus"].map((m) => { const o = el("option", null, MODEL_IT[m]); o.value = m; return o; }));
+  mod.value = ph.model || s.model || "sonnet";
+  mod.title = "Modello degli agenti di questa fase";
+  if (s.model) mod.title += ` · consigliato: ${MODEL_IT[phaseModel(ph.role, s.model)]}`;
+  mod.addEventListener("change", updateSummary);
   const eff = el("select", "ph-effort");
   eff.setAttribute("aria-label", `Effort della fase ${i + 1}`);
   eff.title = "Effort: quanto ragionano gli agenti di questa fase";
@@ -1596,7 +1630,7 @@ function phaseEditor(ph, i) {
   eff.value = ph.effort || "";
   const rec = recFor(ph.role);
   if (rec) eff.title += ` · consigliato: ${EFF_IT[rec.effort]}`;
-  head.append(el("span", "num", `Fase ${i + 1}`), name, kind, eff);
+  head.append(el("span", "num", `Fase ${i + 1}`), name, kind, mod, eff);
   const grid = el("div", "workers-ed");
   const add = el("button", "add-w", "＋ aggiungi agente");
   add.type = "button";
@@ -1636,6 +1670,7 @@ function collectPlan() {
     phases: [...document.querySelectorAll(".phase-ed")].map((ph) => ({
       name: ph.querySelector(".ph-name").value,
       effort: ph.querySelector(".ph-effort").value,
+      model: ph.querySelector(".ph-model").value,
       workers: [...ph.querySelectorAll(".w-ed")].map((w) => ({ name: w.querySelector(".w-name").value, task: w.querySelector(".w-task").value })),
     })),
   };
@@ -1648,10 +1683,14 @@ function updateSummary() {
   box.replaceChildren();
   const add = (k, v) => { const d = el("div"); d.append(el("dt", null, k), el("dd", null, v)); box.append(d); };
   add("Cartella", prettyPath(String(P.repo || s.path)) + (P.repo_state ? `, ${P.repo_state}` : ""));
-  add("Modello", MODEL_IT[s.model] || s.model);
+  const eds = [...document.querySelectorAll(".phase-ed")];
+  const used = eds.map((ph) => ph.querySelector(".ph-model").value || s.model);
+  const max = eds.reduce((t, ph) => t + ph.querySelectorAll(".w-ed").length
+    * phaseBudget(s.budget, ph.querySelector(".ph-model").value || s.model, s.model), 0);
+  add("Modello", modelsLabel(used.length ? used : [s.model]) || "—");
   if (P.advice && ADV) add("Squadra", `${ADV.difficulty[s.difficulty].label}, ${ADV.quality[s.quality].label.toLowerCase()}`);
   add("Agenti", String(n));
-  add("Spesa massima", fmtCost(n * s.budget + 0));
+  add("Spesa massima", fmtCost(eds.length ? max : n * s.budget));
   add("Build e test", s.allow_build ? "sì" : "no");
 }
 $("#btnStart").addEventListener("click", async () => {

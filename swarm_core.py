@@ -619,7 +619,8 @@ class Swarm:
         self.bus("orchestrator", wk.label, f"assegna · {wk.task}")
         self.pulse(wk, True, "assign")
         await asyncio.sleep(0.8)
-        self.handle_event(wk, {"type": "system", "subtype": "init", "model": "claude-sonnet-5-5"})
+        demo_model = {"haiku": "claude-haiku-5-5", "opus": "claude-opus-5-5"}.get(self.cfg.get("model") or "", "claude-sonnet-5-5")
+        self.handle_event(wk, {"type": "system", "subtype": "init", "model": demo_model})
         rust = "rust" in (self.cfg.get("goal", "") + wk.task).lower()
         if rust:
             plan = ["leggi il modulo esistente", "definisci i tipi", "porta la logica principale",
