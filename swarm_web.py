@@ -7,7 +7,7 @@ Server HTTP minimale (solo libreria standard), solo su 127.0.0.1:
   GET  /api/advice        tabella dei consigli (agenti, effort, modello)
   POST /api/plan          {idea, path, model, budget, max_workers, allow_build,
                            difficulty, quality}
-  POST /api/replan        {feedback}
+  POST /api/replan        {feedback, agents?: [{phase, agents}]}  agents = quanti agenti per fase
   POST /api/examples      {idea}  cosa aspettarsi da ognuna delle 9 caselle della matrice
   POST /api/start         {plan}
   POST /api/stop          ferma pianificazione o agenti
@@ -139,10 +139,7 @@ class WebDashboard:
         if path == "/api/plan":
             p.begin_plan(d)
         elif path == "/api/replan":
-            fb = str(d.get("feedback") or "").strip()
-            if not fb:
-                raise ValueError("scrivi cosa cambiare nel piano")
-            p.begin_plan(p.settings, feedback=fb)
+            p.replan(str(d.get("feedback") or ""), d.get("agents"))
         elif path == "/api/start":
             p.start(d.get("plan"))
         elif path == "/api/stop":

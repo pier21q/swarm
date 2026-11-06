@@ -4,6 +4,28 @@ Niente in sospeso.
 
 ## Fatto
 
+### Quanti agenti per fase, nel piano (6 novembre 2026)
+
+Nella schermata del piano ora scegli quanti agenti mettere in ogni fase e vedi
+cosa cambia rispetto al consiglio.
+
+- `web/index.html`: riquadro **Agenti consigliati** sotto il riepilogo (per ogni
+  fase: consigliati, quanti nel piano, perché; pulsanti "Usa i consigliati" e
+  "Ridividi i compiti con questi numeri"). In ogni fase un selettore − n + accanto
+  a "consigliati N", e sotto una nota con l'effetto della scelta (diverso per
+  fondamenta, sviluppo, revisione, integrazione) e la spesa massima della fase con
+  la differenza rispetto ai consigliati. Togliendo un agente il suo compito passa a
+  quello prima; un agente nuovo senza compito ha il bordo ambra. Il massimo per
+  fase resta "Agenti in parallelo" del modulo.
+- `swarm_project.py`: `replan(feedback, agents)` aggiunge al feedback il numero di
+  agenti per fase da rispettare; in demo il pianificatore finto lo rispetta.
+  `swarm_web.py`: `/api/replan` accetta `agents`.
+- Corretto anche: ricaricando la pagina sul piano il riquadro restava nascosto
+  perché la tabella dei consigli arrivava dopo.
+- Provato in demo su desktop (chiaro e scuro) e a 375px. Non provato con il
+  pianificatore vero: la ripianificazione con i numeri passa dal feedback testuale,
+  quindi Claude potrebbe non rispettarli sempre.
+
 ### Correzioni di bug (6 novembre 2026)
 
 - **Schermata iniziale vuota dopo l'interruttore "Lanciare build e test"**

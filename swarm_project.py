@@ -20,7 +20,7 @@ import re
 import shutil
 import time
 from pathlib import Path
-from typing import Callable, Deque, List, Optional
+from typing import Callable, Deque, Dict, List, Optional
 
 from swarm_advice import EFFORTS, MODELS, assign_efforts, phase_budget, planner_brief, recommend
 import swarm_publish as pub
@@ -209,6 +209,7 @@ class Project:
         self.ended_at = 0.0
         self.stop_requested = False
         self._prev_plan: Optional[dict] = None
+        self._want_agents: Dict[str, int] = {}  # agenti per fase chiesti nella ripianificazione
         self.advice: Optional[dict] = None
         self.github: Optional[dict] = None
         self._gh_task: Optional[asyncio.Future] = None
@@ -299,12 +300,40 @@ class Project:
         self.advice = rec
         self.repo = repo
         self._prev_plan = self.plan if feedback else None
+        self._want_agents = {}
         self.plan = None
         self.error = ""
         self.stage = "planning"
         self.stop_requested = False
         self._plan_gen += 1
         self._task = asyncio.ensure_future(self._plan(feedback.strip()[:2000], self._plan_gen))
+
+    def replan(self, feedback: str, agents=None) -> None:
+        """Rifà il piano con il feedback scritto e/o con il numero di agenti scelto per fase
+        (`agents`: [{"phase": nome, "agents": n}]): il pianificatore ridivide i compiti."""
+        fb = " ".join(str(feedback or "").split())
+        want: Dict[str, int] = {}
+        for a in agents if isinstance(agents, list) else []:
+            if not isinstance(a, dict):
+                continue
+            name = short(str(a.get("phase") or "").strip(), 40)
+            try:
+                n = int(a.get("agents"))
+            except (TypeError, ValueError):
+                continue
+            if name and 1 <= n <= self._cap():
+                want[name] = n
+        if not fb and not want:
+            raise ValueError("scrivi cosa cambiare nel piano")
+        if want:
+            fb = (fb + "\n" if fb else "") + (
+                "Numero di agenti per fase scelto dall'utente: rispettalo esattamente, anche dove "
+                "le regole sopra dicono un solo agente. Ridividi i compiti di queste fasi tra gli "
+                "agenti, ognuno con file diversi: "
+                + "; ".join(f"fase \"{k}\" {v} agent{'e' if v == 1 else 'i'}" for k, v in want.items())
+                + ".")
+        self.begin_plan(self.settings, feedback=fb)
+        self._want_agents = {k.lower(): v for k, v in want.items()}
 
     async def _plan(self, feedback: str, gen: int) -> None:
         try:
@@ -433,7 +462,7 @@ class Project:
                                "descritte in INTERFACCE.md. Tocca solo src/ui/ e index.html."),
                ("test", "Scrivi i test (tests/) per il modulo dati e per i componenti principali, "
                         "basandoti su INTERFACCE.md, e configura il comando per lanciarli. Tocca solo tests/.")][:n]
-        return json.dumps({
+        plan = {
             "goal": short(idea, 160),
             "phases": [
                 {"name": "Fondamenta", "workers": [{"name": "fondamenta", "task":
@@ -450,7 +479,17 @@ class Project:
                 {"name": "Integrazione", "workers": [{"name": "integrazione", "task":
                     "Collega dati e interfaccia, sistema ciò che non combacia con INTERFACCE.md, fai "
                     "passare i test e scrivi nel README come avviare il progetto."}]},
-            ]})
+            ]}
+        for ph in plan["phases"]:  # in demo rispetta il numero di agenti chiesto nella ripianificazione
+            n = self._want_agents.get(ph["name"].lower())
+            ws = ph["workers"]
+            while n and len(ws) > n:
+                ws.pop()
+            for k in range(len(ws) + 1, (n or 0) + 1):
+                ws.append({"name": f"{ph['name'].lower()}-{k}", "task":
+                           f"Parte {k} della fase {ph['name']}: segui INTERFACCE.md e tocca solo "
+                           f"src/parte-{k}/."})
+        return json.dumps(plan)
 
     # 2. esecuzione ----------------------------------------------------------
     def start(self, plan: Optional[dict] = None) -> None:

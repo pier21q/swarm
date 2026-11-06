@@ -632,6 +632,41 @@ body[data-studio] .w-ed textarea { font-size: 14px; line-height: 1.5; background
 body[data-studio] .add-w { border-radius: 14px; border-color: var(--line-2); background: transparent; color: var(--dim); font-weight: 600; }
 body[data-studio] .add-w:hover { border-color: var(--ink); color: var(--ink); }
 body[data-studio] .review-foot { padding: 18px 0 18px; align-items: center; }
+/* quanti agenti per fase */
+.ag-step { display: inline-flex; align-items: center; border: 1px solid var(--line-2); border-radius: 999px; overflow: hidden; flex: none; }
+.ag-step button { border: 0; border-radius: 0; background: transparent; padding: 0; width: 34px; height: 32px; font-size: 17px; line-height: 1; color: var(--ink, var(--text)); }
+.ag-step button:hover:not(:disabled) { background: var(--panel-2, var(--line)); }
+.ag-step button:disabled { opacity: .3; cursor: default; }
+.ag-step output { min-width: 7.5ch; padding: 0 4px; text-align: center; font-size: 13.5px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.phase-head .kind.ok { color: var(--green); }
+.ph-note { margin: 14px 18px 0; padding-left: 12px; border-left: 3px solid var(--line-2); color: var(--dim); font-size: 13.5px; line-height: 1.5; }
+.ph-note.off { border-left-color: var(--amber); }
+.ph-note p { margin: 0 0 3px; max-width: 82ch; }
+.ph-note .cost { color: var(--faint); font-variant-numeric: tabular-nums; }
+.ph-note .redo { color: var(--text); }
+.ph-note .redo button.link { font-size: inherit; }
+.w-ed.empty textarea { border-color: var(--amber); }
+.rec-box { border: 1px solid var(--line); border-radius: 18px; background: var(--panel); padding: 18px 20px 16px; margin: 0 0 28px; }
+.rec-head h2 { margin: 0 0 4px; font-size: 19px; font-weight: 800; font-variation-settings: "wdth" 110; }
+.rec-head p { margin: 0 0 10px; color: var(--dim); font-size: 14px; max-width: 72ch; }
+.rec-list { list-style: none; margin: 0; padding: 0; }
+.rec-list li {
+  display: grid; grid-template-columns: minmax(120px, 1fr) auto auto; grid-template-areas: "name n cur" "why why why";
+  gap: 2px 18px; align-items: baseline; padding: 9px 0; border-top: 1px solid var(--line);
+}
+.rl-name { grid-area: name; font-weight: 700; overflow-wrap: anywhere; }
+.rl-n { grid-area: n; color: var(--dim); font-size: 13px; }
+.rl-cur { grid-area: cur; color: var(--green); font-size: 13px; font-weight: 600; text-align: right; }
+.rec-list li.off .rl-cur { color: var(--amber); }
+.rl-why { grid-area: why; color: var(--faint); font-size: 13px; }
+.rec-foot { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; margin-top: 12px; }
+.rec-ok { color: var(--green); font-size: 14px; font-weight: 600; }
+@media (max-width: 600px) {
+  .rec-box { padding: 16px 16px 14px; }
+  .rec-list li { grid-template-columns: 1fr auto; grid-template-areas: "name cur" "n n" "why why"; }
+  .rec-foot button { flex: 1 1 100%; }
+  .ph-note { margin: 12px 14px 0; }
+}
 
 /* risultato */
 body[data-studio] .done-wrap { width: min(1060px, 100%); margin: 0 auto; padding: 64px 28px 96px; max-width: none; }
@@ -856,8 +891,9 @@ body[data-studio] .done-actions { margin-top: 40px; align-items: center; gap: 12
   <section class="view scroll" id="vReview" hidden>
     <div class="review">
       <h1 class="rv-title">Il piano</h1>
-      <p class="rv-lead">Ogni fase parte quando finisce quella prima. Puoi cambiare i compiti, aggiungere o togliere agenti e scegliere quanto ragionano.</p>
+      <p class="rv-lead">Ogni fase parte quando finisce quella prima. Puoi cambiare i compiti, scegliere quanti agenti mettere in ogni fase e quanto ragionano.</p>
       <dl class="summary-row" id="rSummary"></dl>
+      <section class="rec-box" id="rAdvice" aria-label="Agenti consigliati" hidden></section>
       <div class="field">
         <label class="f" for="rGoal">Obiettivo (lo leggono tutti gli agenti)</label>
         <input type="text" id="rGoal">
@@ -936,6 +972,7 @@ let C = null;            // stato dello swarm della fase corrente
 let view = "";
 let runId = null, cards = [], pulses = [], glow = 0, openIdx = -1, stacked = false;
 let reviewKey = "", formFilled = false;
+let origCounts = [];   // agenti per fase nel piano del pianificatore
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -1205,6 +1242,7 @@ async function loadAdvice() {
   buildMatrix();
   const s = (P && P.settings) || {};
   if (s.model) renderAdvice(); else applyAdvice();
+  renderRecBox();  // il piano può essere già sullo schermo (pagina ricaricata in revisione)
 }
 ["#fModel", "#fBudget", "#fWorkers", "#fBuild"].forEach((id) => {
   $(id).addEventListener("input", renderAdvice);
@@ -1601,28 +1639,63 @@ function renderReview() {
   const key = JSON.stringify(P.plan);
   if (key === reviewKey) return;
   reviewKey = key;
-  const s = P.settings, plan = P.plan;
+  const plan = P.plan;
+  origCounts = plan.phases.map((ph) => ph.workers.length);
   $("#rGoal").value = plan.goal || "";
   $("#rFeedback").value = "";
   const box = $("#rPhases");
   box.replaceChildren();
   plan.phases.forEach((ph, i) => box.append(phaseEditor(ph, i)));
   updateSummary();
+  renderRecBox();
+}
+const agentsWord = (n) => (n === 1 ? "1 agente" : `${n} agenti`);
+/* cosa cambia con n agenti in una fase, rispetto ai consigliati */
+function countNote(role, n, rec) {
+  if (!rec) return n === 1 ? "Un agente da solo: niente da far combaciare con altri."
+    : `${n} agenti in parallelo, ognuno sui suoi file.`;
+  const r = rec.agents, d = Math.abs(n - r);
+  if (n === r) return `Consigliat${r === 1 ? "o" : "i"} ${r}: ${rec.why}.`;
+  if (role === "fondamenta") return `Con ${n} agenti la struttura la decidono in più, senza vedersi: `
+    + "rischiano di scegliere tecnologie e nomi diversi e i loro file vanno in conflitto nel merge. "
+    + "Qui di solito ne basta 1.";
+  if (role === "integrazione") return `Unire i pezzi vuol dire toccare gli stessi file: con ${n} agenti si `
+    + "pestano i piedi e il merge finale rischia conflitti che nessuno sistema. Di solito ne basta 1.";
+  if (role === "revisione") return n > r
+    ? `${agentsWord(d)} in più: più occhi sul codice, ma scrivono tutti in REVISIONE.md e tests/ e facilmente vanno in conflitto.`
+    : "Un agente solo fa sia i test sia la rilettura: costa meno, ma ha più lavoro e può trascurare una delle due.";
+  if (n > r) return `${agentsWord(d)} in più del consiglio: il lavoro si divide in pezzi più piccoli e la fase `
+    + "finisce prima, ma ogni pezzo in più va fatto combaciare. Più rischio di conflitti nel merge e più "
+    + "lavoro per l'integrazione." + (n > 5 ? " Oltre 5 di solito non conviene." : "");
+  return `${agentsWord(d)} in meno del consiglio: ogni agente ha un compito più grande e la fase dura di più, `
+    + "ma ci sono meno pezzi da far combaciare." + (n === 1 ? " Con un agente solo non c'è niente in parallelo." : "");
 }
 function phaseEditor(ph, i) {
   const wrap = el("section", "phase-ed");
+  wrap.dataset.role = ph.role || "";
   const head = el("div", "phase-head");
   const name = el("input", "ph-name");
   name.type = "text"; name.value = ph.name; name.setAttribute("aria-label", `Nome della fase ${i + 1}`);
-  const kind = el("span", "kind");
+  name.addEventListener("input", () => renderRecBox());
   const s = P.settings || {};
+  const rec = recFor(ph.role);
+  /* quanti agenti: − n + e il consiglio accanto */
+  const step = el("div", "ag-step");
+  step.setAttribute("role", "group"); step.setAttribute("aria-label", `Agenti della fase ${i + 1}`);
+  const minus = el("button", "ghost", "−");
+  minus.type = "button"; minus.setAttribute("aria-label", "Un agente in meno");
+  const out = el("output");
+  out.setAttribute("aria-live", "polite");
+  const plus = el("button", "ghost", "+");
+  plus.type = "button"; plus.setAttribute("aria-label", "Un agente in più");
+  step.append(minus, out, plus);
+  const kind = el("span", "kind");
   const mod = el("select", "ph-model");
   mod.setAttribute("aria-label", `Modello della fase ${i + 1}`);
   mod.append(...["haiku", "sonnet", "opus"].map((m) => { const o = el("option", null, MODEL_IT[m]); o.value = m; return o; }));
   mod.value = ph.model || s.model || "sonnet";
   mod.title = "Modello degli agenti di questa fase";
   if (s.model) mod.title += ` · consigliato: ${MODEL_IT[phaseModel(ph.role, s.model)]}`;
-  mod.addEventListener("change", updateSummary);
   const eff = el("select", "ph-effort");
   eff.setAttribute("aria-label", `Effort della fase ${i + 1}`);
   eff.title = "Effort: quanto ragionano gli agenti di questa fase";
@@ -1630,25 +1703,93 @@ function phaseEditor(ph, i) {
   def.value = "";
   eff.append(def, ...EFF_LIST.map((e) => { const o = el("option", null, `effort ${EFF_IT[e]}`); o.value = e; return o; }));
   eff.value = ph.effort || "";
-  const rec = recFor(ph.role);
   if (rec) eff.title += ` · consigliato: ${EFF_IT[rec.effort]}`;
-  head.append(el("span", "num", `Fase ${i + 1}`), name, kind, mod, eff);
+  head.append(el("span", "num", `Fase ${i + 1}`), name, step, kind, mod, eff);
+  const note = el("div", "ph-note");
   const grid = el("div", "workers-ed");
   const add = el("button", "add-w", "＋ aggiungi agente");
   add.type = "button";
-  const refresh = () => {
-    const n = grid.querySelectorAll(".w-ed").length;
-    kind.textContent = (n === 1 ? "1 agente" : `${n} agenti in parallelo`)
-      + (rec ? ` · consigliati ${rec.agents}` : "");
-    kind.classList.toggle("off", !!rec && rec.agents !== n);
-    add.hidden = n >= capFor();
-    grid.querySelectorAll(".w-ed .rm").forEach((b) => (b.hidden = n <= 1));
-    updateSummary();
+  const cards = () => [...grid.querySelectorAll(".w-ed")];
+  const orig = origCounts[i] || ph.workers.length;
+
+  const renderNote = () => {
+    const n = cards().length;
+    const per = phaseBudget(s.budget, mod.value || s.model, s.model);
+    note.replaceChildren(el("p", null, countNote(ph.role, n, rec)));
+    let cost = `Spesa massima della fase: ${fmtCost(n * per)}` + (n > 1 ? ` (${n} × ${fmtCost(per)})` : "");
+    if (rec && rec.agents !== n) {
+      const d = (n - rec.agents) * per;
+      cost += `, ${d > 0 ? "+" : "−"}${fmtCost(Math.abs(d))} rispetto ai consigliati`;
+    }
+    note.append(el("p", "cost", cost));
+    if (n !== orig) {
+      const empty = cards().filter((c) => c.querySelector(".w-task").value.trim().length < 10).length;
+      const p = el("p", "redo");
+      p.append(el("span", null, `Il pianificatore aveva diviso il lavoro per ${agentsWord(orig)}`
+        + (empty ? `: ${empty === 1 ? "un agente non ha" : `${empty} agenti non hanno`} ancora un compito. Scrivilo tu o ` : ". Puoi ")),
+        btn(empty ? "fai ridividere i compiti" : "far ridividere i compiti", "link", redistribute));
+      note.append(p);
+    }
+    note.classList.toggle("off", !!rec && rec.agents !== n);
   };
-  add.addEventListener("click", () => { grid.insertBefore(workerEditor({ name: "", task: "" }, refresh), add); refresh(); });
+  const refresh = () => {
+    const n = cards().length, cap = capFor();
+    out.textContent = agentsWord(n);
+    minus.disabled = n <= 1;
+    plus.disabled = n >= cap;
+    plus.title = n >= cap ? `Massimo ${cap} per fase: è il valore "Agenti in parallelo" scelto nel modulo` : "Un agente in più";
+    kind.textContent = rec ? `consigliat${rec.agents === 1 ? "o" : "i"} ${rec.agents}` : "";
+    kind.classList.toggle("off", !!rec && rec.agents !== n);
+    kind.classList.toggle("ok", !!rec && rec.agents === n);
+    add.hidden = n >= cap;
+    cards().forEach((c) => {
+      c.querySelector(".rm").hidden = n <= 1;
+      c.classList.toggle("empty", c.querySelector(".w-task").value.trim().length < 10);
+    });
+    renderNote();
+    updateSummary();
+    renderRecBox();
+  };
+  const slug = () => (name.value || "agente").toLowerCase().normalize("NFD").replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "").slice(0, 20) || "agente";
+  const addAgent = () => {
+    const used = new Set(cards().map((c) => c.querySelector(".w-name").value));
+    let k = cards().length + 1;
+    while (used.has(`${slug()}-${k}`)) k++;
+    const c = workerEditor({ name: `${slug()}-${k}`, task: "" }, refresh);
+    grid.insertBefore(c, add);
+    return c;
+  };
+  /* togliendo l'ultimo agente il suo compito non si perde: passa a quello prima */
+  const removeLast = () => {
+    const cs = cards();
+    if (cs.length <= 1) return null;
+    const last = cs[cs.length - 1], prev = cs[cs.length - 2];
+    const t = last.querySelector(".w-task").value.trim();
+    last.remove();
+    if (!t) return null;
+    const pt = prev.querySelector(".w-task");
+    pt.value = (pt.value.trim() ? pt.value.trim() + "\n\n" : "") + t;
+    return [last.querySelector(".w-name").value, prev.querySelector(".w-name").value];
+  };
+  wrap._setCount = (n) => {
+    n = Math.max(1, Math.min(capFor(), n));
+    let moved = null;
+    while (cards().length < n) addAgent();
+    while (cards().length > n) moved = removeLast() || moved;
+    refresh();
+    return moved;
+  };
+  minus.addEventListener("click", () => {
+    const m = wrap._setCount(cards().length - 1);
+    if (m) toast(`Il compito di «${m[0]}» passa a «${m[1]}»`);
+  });
+  plus.addEventListener("click", () => { wrap._setCount(cards().length + 1); cards().at(-1).querySelector(".w-task").focus(); });
+  add.addEventListener("click", () => { addAgent(); refresh(); cards().at(-1).querySelector(".w-task").focus(); });
+  mod.addEventListener("change", refresh);
   ph.workers.forEach((w) => grid.append(workerEditor(w, refresh)));
   grid.append(add);
-  wrap.append(head, grid);
+  wrap.append(head, note, grid);
   setTimeout(refresh);
   return wrap;
 }
@@ -1663,8 +1804,71 @@ function workerEditor(w, refresh) {
   top.append(el("span", "lbl", "✱"), name, rm);
   const task = el("textarea", "w-task");
   task.value = w.task; task.placeholder = "Cosa deve fare questo agente, quali file può toccare…"; task.setAttribute("aria-label", "Compito dell'agente");
+  let wasEmpty = task.value.trim().length < 10;
+  task.addEventListener("input", () => {  // ridisegna solo quando il compito passa da vuoto a scritto o viceversa
+    const empty = task.value.trim().length < 10;
+    if (empty !== wasEmpty) { wasEmpty = empty; refresh(); }
+  });
   box.append(top, task);
   return box;
+}
+/* fasi dove il numero di agenti non è più quello su cui il pianificatore ha diviso i compiti */
+function changedCounts() {
+  return [...document.querySelectorAll(".phase-ed")].map((w, i) => ({
+    phase: w.querySelector(".ph-name").value.trim() || `Fase ${i + 1}`,
+    agents: w.querySelectorAll(".w-ed").length, orig: origCounts[i],
+  })).filter((x) => x.agents !== x.orig);
+}
+async function redistribute() {
+  const ch = changedCounts();
+  if (!ch.length) return;
+  await act("/api/replan", { feedback: $("#rFeedback").value, agents: ch.map(({ phase, agents }) => ({ phase, agents })) });
+}
+function useRecommended() {
+  let capped = false;
+  for (const w of document.querySelectorAll(".phase-ed")) {
+    const r = recFor(w.dataset.role);
+    if (!r) continue;
+    if (r.agents > capFor()) capped = true;
+    w._setCount(r.agents);
+  }
+  if (capped) toast(`Alcune fasi restano a ${capFor()} agenti: è il massimo scelto nel modulo`);
+}
+function renderRecBox() {
+  const box = $("#rAdvice");
+  const a = P && P.advice;
+  const eds = [...document.querySelectorAll(".phase-ed")];
+  if (!a || !ADV || !eds.length) { box.hidden = true; return; }
+  box.hidden = false;
+  const head = el("div", "rec-head");
+  head.append(el("h2", null, "Agenti consigliati"),
+    el("p", null, `Per difficoltà ${ADV.difficulty[a.difficulty].label.toLowerCase()} e qualità `
+      + `${ADV.quality[a.quality].label.toLowerCase()}, come hai scelto nel modulo. Più agenti finiscono `
+      + "prima ma costano di più e hanno più pezzi da far combaciare."));
+  const list = el("ol", "rec-list");
+  let diff = 0;
+  eds.forEach((w, i) => {
+    const r = recFor(w.dataset.role), n = w.querySelectorAll(".w-ed").length;
+    const off = !!r && r.agents !== n;
+    if (off) diff++;
+    const li = el("li", off ? "off" : "");
+    li.append(el("span", "rl-name", w.querySelector(".ph-name").value.trim() || `Fase ${i + 1}`),
+      el("span", "rl-n", r ? `consigliat${r.agents === 1 ? "o" : "i"} ${r.agents}` : "nessun consiglio"),
+      el("span", "rl-cur", r && !off ? `✓ ${agentsWord(n)} nel piano` : `${agentsWord(n)} nel piano`),
+      el("span", "rl-why", r ? r.why : "fase in più proposta dal pianificatore"));
+    list.append(li);
+  });
+  const foot = el("div", "rec-foot");
+  if (diff) foot.append(btn("Usa i consigliati", "", useRecommended));
+  const ch = changedCounts();
+  if (ch.length) {
+    const b = btn("Ridividi i compiti con questi numeri", "primary", redistribute);
+    b.title = "Il pianificatore rifà i compiti di tutto il piano con questo numero di agenti. "
+      + "Le modifiche fatte a mano ai compiti si perdono.";
+    foot.append(b);
+  }
+  if (!diff && !ch.length) foot.append(el("span", "rec-ok", "✓ Il piano usa gli agenti consigliati."));
+  box.replaceChildren(head, list, foot);
 }
 function collectPlan() {
   return {

@@ -58,8 +58,17 @@ Si apre il browser su http://localhost:8765 (o sulla prima porta libera dopo).
    gli agenti: basso, medio, alto, molto alto, massimo) e quanti agenti sono
    consigliati. Puoi cambiare il modello di ogni fase: la spesa massima in
    alto si aggiorna.
-   Puoi cambiare ogni compito, aggiungere o togliere agenti, oppure scrivere
-   cosa non ti convince e premere "Rifai il piano".
+   In alto, **Agenti consigliati** mostra per ogni fase quanti agenti
+   consiglia swarm per la difficoltà e la qualità scelte, perché, e quanti ce
+   ne sono nel piano. In ogni fase scegli quanti agenti mettere con − e +:
+   sotto vedi cosa cambia (più veloce ma più pezzi da far combaciare, o
+   compiti più grandi) e la spesa massima della fase. Se togli un agente il
+   suo compito passa a quello prima; se ne aggiungi uno, scrivigli il compito
+   o premi "Ridividi i compiti con questi numeri" e il pianificatore rifà i
+   compiti con quel numero di agenti per fase. "Usa i consigliati" rimette i
+   numeri consigliati.
+   Puoi cambiare ogni compito, oppure scrivere cosa non ti convince e premere
+   "Rifai il piano".
 3. **Avvia**: le fasi partono una dopo l'altra. A fine fase swarm unisce i
    branch degli agenti nel tuo progetto, così la fase dopo parte dal lavoro
    fatto. Se due agenti vanno in conflitto, il merge viene annullato e il
