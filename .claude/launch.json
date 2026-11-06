@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "swarm-demo",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["swarm.py", "--web", "--demo", "--no-open", "--port", "8781"],
+      "port": 8781
+    },
+    {
+      "name": "swarm-real",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["swarm.py", "--web", "--no-open", "--port", "8782"],
+      "port": 8782
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "repo": "/percorso/del/tuo/progetto",
+  "goal": "App Serie A Live: risultati in tempo reale, classifica e calendario",
+  "model": "sonnet",
+  "permission_mode": "acceptEdits",
+  "max_budget_usd": 2.0,
+  "allowed_tools": [],
+  "workers": [
+    {
+      "name": "dati",
+      "task": "Scrivi il modulo che recupera risultati, classifica e calendario dalla fonte dati del progetto, con gestione degli errori e cache. Esponi funzioni chiare che il frontend possa usare."
+    },
+    {
+      "name": "ui",
+      "task": "Migliora l'interfaccia: pagina partite live, classifica e calendario, responsive da telefono. Usa le funzioni del modulo dati (chiedi a claude-1 i nomi se non esistono ancora)."
+    },
+    {
+      "name": "test",
+      "task": "Aggiungi test automatici per il codice esistente e configura il comando per lanciarli. Non modificare il codice dell'app, solo test e configurazione."
+    }
+  ]
+}
