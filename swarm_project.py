@@ -214,6 +214,9 @@ class Project:
         self._gh_task: Optional[asyncio.Future] = None
         self._planner_proc: Optional[asyncio.subprocess.Process] = None
         self._task: Optional[asyncio.Future] = None
+        # cresce a ogni pianificazione e a ogni annullamento: un pianificatore vecchio che
+        # finisce in ritardo non deve toccare lo stato di quello nuovo
+        self._plan_gen = getattr(self, "_plan_gen", 0) + 1
 
     # notifiche --------------------------------------------------------------
     def emit(self, kind: str, payload: dict) -> None:
@@ -300,9 +303,10 @@ class Project:
         self.error = ""
         self.stage = "planning"
         self.stop_requested = False
-        self._task = asyncio.ensure_future(self._plan(feedback.strip()[:2000]))
+        self._plan_gen += 1
+        self._task = asyncio.ensure_future(self._plan(feedback.strip()[:2000], self._plan_gen))
 
-    async def _plan(self, feedback: str) -> None:
+    async def _plan(self, feedback: str, gen: int) -> None:
         try:
             if not self.demo:
                 await asyncio.get_running_loop().run_in_executor(None, self._prepare_repo)
@@ -310,15 +314,15 @@ class Project:
                      ("ripianifica con il tuo feedback: " + short(feedback, 120)) if feedback
                      else "prepara il piano a fasi per: " + short(self.settings["idea"], 120))
             raw = await (self._fake_planner() if self.demo else self._run_planner(feedback))
-            if self.stop_requested:
-                self.stage = "idle"
+            if gen != self._plan_gen:  # annullata (ed eventualmente già ripartita)
                 return
             plan = assign_efforts(validate_plan(extract_json(raw), self._cap()), self.advice,
                                   self.settings["model"])
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
-            self._fail(f"pianificazione fallita: {short(str(e), 300)}")
+            if gen == self._plan_gen:
+                self._fail(f"pianificazione fallita: {short(str(e), 300)}")
             return
         self.plan = plan
         self.stage = "review"
@@ -403,7 +407,8 @@ class Project:
                 self.planner_cost += float(ev.get("total_cost_usd") or 0)
         rc = await proc.wait()
         stderr = (await err_task).decode("utf-8", "replace").strip()
-        self._planner_proc = None
+        if self._planner_proc is proc:
+            self._planner_proc = None
         if self.stop_requested:
             return ""
         if is_error or rc != 0:
@@ -457,6 +462,8 @@ class Project:
         self.stage = "running"
         self.stop_requested = False
         self.started_at = time.time()
+        self.ended_at = 0.0
+        self.final = None
         self.phases = [{"name": p["name"], "status": "pending", "merged": [], "conflicts": [],
                         "errors": [], "cost": 0.0} for p in self.plan["phases"]]
         self._task = asyncio.ensure_future(self._run())
@@ -676,11 +683,18 @@ class Project:
     async def stop(self) -> None:
         self.stop_requested = True
         if self.stage == "planning":
+            self._plan_gen += 1
             if self._planner_proc and self._planner_proc.returncode is None:
                 self._planner_proc.terminate()
             elif self._task and not self._task.done():
                 self._task.cancel()
-            self.stage = "idle" if not self.plan else "review"
+            self._planner_proc = None
+            # annullare una ripianificazione riporta al piano di prima, non al modulo vuoto
+            if self._prev_plan:
+                self.plan, self._prev_plan = self._prev_plan, None
+                self.stage = "review"
+            else:
+                self.stage = "idle"
             self.bus("orchestrator", "you", "pianificazione annullata", "warn")
         elif self.stage == "running" and self.core:
             await self.core.stop_all()
@@ -701,6 +715,17 @@ class Project:
         self.stage = "idle"
         self.plan = None
         self.error = ""
+        # via i dati della corsa precedente: altrimenti la nuova somma i costi vecchi,
+        # mostra un tempo sbagliato (ended_at vecchio) e un fallimento del piano apre la pagina finale
+        self.phases = []
+        self.phase_idx = -1
+        self.core = None
+        self.final = None
+        self.github = None
+        self.cost_done = 0.0
+        self.planner_cost = 0.0
+        self.started_at = 0.0
+        self.ended_at = 0.0
 
     async def shutdown(self) -> None:
         await self.stop()

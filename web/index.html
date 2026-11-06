@@ -128,7 +128,9 @@ code { background: var(--panel-2); border: 1px solid var(--line); border-radius:
 .layout.solo { grid-template-columns: 1fr; }
 .layout.solo .bus { display: none; }
 .view { min-height: 560px; min-width: 0; }
-.scroll { overflow-y: auto; }
+/* position: relative tiene dentro lo scroller gli elementi assoluti (input nascosti, .sr-only):
+   senza, finiscono fuori dal layout, allungano la pagina e al focus la finestra scorre nel vuoto */
+.scroll { overflow-y: auto; position: relative; }
 
 /* ── modulo idea ────────────────────────────────────────── */
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -547,12 +549,12 @@ textarea.idea:focus-visible { box-shadow: none; border-bottom-color: var(--ink);
 .perm h2 { margin: 0 0 6px; font-size: 26px; line-height: 1.05; font-weight: 800; font-variation-settings: "wdth" 115; }
 .perm-text p { margin: 0; color: var(--dim); font-size: 14px; max-width: 42ch; }
 .switch {
-  display: grid; grid-template-columns: auto 1fr; gap: 16px; align-items: start; cursor: pointer;
+  position: relative; display: grid; grid-template-columns: auto 1fr; gap: 16px; align-items: start; cursor: pointer;
   background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 18px 20px;
   transition: border-color .18s;
 }
 .switch:hover { border-color: var(--line-2); }
-.switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.switch input { position: absolute; top: 20px; left: 20px; opacity: 0; width: 1px; height: 1px; margin: 0; }
 .sw { position: relative; width: 44px; height: 26px; border-radius: 13px; background: var(--line-2); transition: background-color .18s; margin-top: 2px; }
 .sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #FFFFFF; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform .18s; }
 .switch input:checked + .sw { background: var(--cyan); }
@@ -2053,7 +2055,9 @@ function githubCard() {
   if (g.state === "missing") {
     card.append(el("div", "hint", "Serve il comando gh (GitHub CLI). Installalo e fai il login, poi premi Ricontrolla:"));
     card.append(el("pre", "cmd", "brew install gh\ngh auth login"));
-    card.append(el("div", "row"), btn("Ricontrolla", null, () => act("/api/github/check")));
+    const r = el("div", "row");
+    r.append(btn("Ricontrolla", null, () => act("/api/github/check")));
+    card.append(r);
     return card;
   }
   if (g.state === "noauth") {
@@ -2166,7 +2170,9 @@ function connect() {
   es.addEventListener("hello", (e) => {
     const d = JSON.parse(e.data);
     busList.replaceChildren();
-    runId = null; pulses = []; reviewKey = ""; formFilled = false;
+    // dopo una riconnessione non rileggere il modulo dal server: cancellerebbe quello che stai scrivendo
+    runId = null; pulses = []; reviewKey = "";
+    if (view !== "form") formFilled = false;
     setLive("idle");
     onState(d);
     d.history.forEach(addBus);
