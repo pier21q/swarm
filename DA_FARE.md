@@ -50,6 +50,15 @@ per la casella scelta: cosa ottieni, cosa non aspettarti, quanto è curato.
   Provato su 4 idee: nessun titolo-aggettivo, 6-17 secondi, $0,0007-0,002.
   Attenzione: chiedere a Haiku di scrivere le 9 caselle con tanti vincoli lo fa
   ragionare a lungo (circa 45 s); per questo la risposta è compatta.
+- Demo allineata: gli esempi finti passano anch'essi da `assemble()`, con titoli
+  "funzione, fatto" generici ("Più schermate e dati salvati, salva ogni modifica
+  e avvisa").
+- La frase "Quanto è curato" ora è per casella, non per colonna: prima su
+  Complessa/Solida poteva citare funzioni di un'altra riga ("la tua lista" di
+  città salvate). Ogni frase segue il fatto di cura dello stesso livello, così non
+  lo contraddice. Provato su 3 idee (meteo, ricettario, script per le foto):
+  nessuna funzione di un'altra riga, nessuna contraddizione, 7-16 secondi,
+  $0,0008-0,002.
 
 Possibili ritocchi: vedere l'esempio anche al passaggio del mouse senza cambiare
 casella; mostrare i titoli anche su telefono (ora sono nascosti per spazio).

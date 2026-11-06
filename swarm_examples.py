@@ -70,21 +70,27 @@ Per ogni grandezza ("1", "2", "3"):
   rifinita: un caso limite che regge o un dettaglio di grafica]. Ogni grandezza usa una
   situazione diversa. Esempio di forma, per un ricettario: ["si blocca se mancano le dosi",
   "avvisa quali dosi mancano", "converte grammi e tazze"].
+- "polish": 3 frasi, max 15 parole ciascuna, nello stesso ordine di "cura": ognuna racconta
+  cosa vive l'utente nella situazione del fatto con lo stesso numero. La prima dice cosa va
+  storto, la seconda come viene gestito, la terza cosa regge in più. Mai in contraddizione
+  con il fatto; nomina solo funzioni di questa grandezza o di quelle prima.
 - solo per la 3, "limite": una cosa che anche la casella più grande non farà, max 10 parole.
 
 Per ogni livello di cura ("1", "2", "3"):
-- "manca": 1-2 cose che a quel livello mancano, max 10 parole ciascuna (es. "niente test:
-  una modifica può rompere altro"); per la cura 3 una sola voce: il prezzo da pagare.
-- "polish": una frase, max 18 parole, su cosa succede in pratica usandolo, per QUESTA idea.
+- "manca": 1-2 cose che a quel livello mancano, max 10 parole ciascuna, senza nominare
+  funzioni (es. "niente test: una modifica può rompere altro"); per la cura 3 una sola
+  voce: il prezzo da pagare.
 
 Mai giudizi al posto dei fatti: non usare curato, rifinito, completo, solido, affidabile,
 ordinato, robusto, semplice, base, avanzato, pronto, professionale, sistema, piattaforma.
 Niente gergo tecnico: scrivi come a un amico.
 
 Rispondi solo con questo JSON:
-{{"grandezze": {{"1": {{"nome": "...", "funzioni": ["..."], "cura": ["...", "...", "..."]}},
-               "2": {{...}}, "3": {{"nome": "...", "funzioni": ["..."], "cura": ["...", "...", "..."], "limite": "..."}}}},
- "cura": {{"1": {{"manca": ["..."], "polish": "..."}}, "2": {{...}}, "3": {{...}}}}}}
+{{"grandezze": {{"1": {{"nome": "...", "funzioni": ["..."], "cura": ["...", "...", "..."],
+                      "polish": ["...", "...", "..."]}},
+               "2": {{...}}, "3": {{"nome": "...", "funzioni": ["..."], "cura": ["...", "...", "..."],
+                                  "polish": ["...", "...", "..."], "limite": "..."}}}},
+ "cura": {{"1": {{"manca": ["..."]}}, "2": {{...}}, "3": {{...}}}}}}
 """
 
 
@@ -118,7 +124,9 @@ def assemble(raw: dict) -> dict:
     """Dalla risposta compatta (funzioni per riga, cura per colonna) costruisce le 9 caselle.
 
     Le tre caselle di una riga hanno per forza le stesse funzioni, e le tre di una
-    colonna la stessa descrizione della cura: la coerenza la garantisce il codice.
+    colonna le stesse cose che mancano: la coerenza la garantisce il codice. La frase
+    "quanto è curato" è invece per casella (riga × livello), così parla solo delle
+    funzioni di quella riga; se manca si usa quella della colonna.
     Una risposta già nel formato a 9 caselle passa così com'è.
     """
     sizes, care = raw.get("grandezze"), raw.get("cura")
@@ -141,6 +149,7 @@ def assemble(raw: dict) -> dict:
         name = re.sub(r"\s+", " ", str(s.get("nome") or "")).strip().rstrip(".")
         funcs = funcs_by[d]
         facts = _clean_list(s.get("cura"), 3)
+        polish = _clean_list(s.get("polish"), 3)
         if d < 3:
             later = funcs_by[d + 1][:2]
         else:
@@ -154,8 +163,8 @@ def assemble(raw: dict) -> dict:
             if q > 1 and fact:
                 get = get[:3] + [_cap(fact)]
             nots = later[:1] + [_cap(x) for x in _clean_list(c.get("manca"), 1 if q == 3 else 2)]
-            out[f"{d}-{q}"] = {"title": title, "get": get[:4], "not": nots[:3],
-                               "polish": str(c.get("polish") or "")}
+            pol = polish[q - 1] if len(polish) >= q else str(c.get("polish") or "")
+            out[f"{d}-{q}"] = {"title": title, "get": get[:4], "not": nots[:3], "polish": pol}
     return out
 
 
@@ -242,48 +251,47 @@ def _subject(idea: str) -> str:
     return " ".join(words[:5]) or "il progetto"
 
 
-SIZE_GET = {
-    1: ["la funzione principale di {s}, e basta", "una sola schermata, senza account"],
-    2: ["{s} con più schermate collegate tra loro", "dati salvati, ritrovi tutto quando torni",
-        "impostazioni e ricerca"],
-    3: ["{s} completo: interfaccia, server e dati", "account utente e dati che restano tra un uso e l'altro",
-        "tante funzioni oltre a quella principale"],
+# Stessa forma della risposta di Haiku: funzioni e frase sulla cura per riga, cose che
+# mancano per colonna.
+# Passa da assemble(), così la demo mostra caselle costruite come quelle vere.
+DEMO_SIZES = {
+    1: {"nome": "Una schermata sola",
+        "funzioni": ["Solo il cuore dell'idea: {s}", "Una sola schermata, senza account"],
+        "cura": ["si blocca con un dato strano", "avvisa se un dato è sbagliato",
+                 "regge i casi strani"],
+        "polish": ["Fa la cosa principale, ma un dato strano la blocca.",
+                   "Fa la cosa principale e ti dice cosa correggere se sbagli.",
+                   "Fa la cosa principale anche con dati strani, e si legge bene."]},
+    2: {"nome": "Più schermate e dati salvati",
+        "funzioni": ["Più schermate collegate tra loro", "Dati salvati: ritrovi tutto quando torni",
+                     "Impostazioni e ricerca"],
+        "cura": ["perde i dati se chiudi male", "salva ogni modifica e avvisa",
+                 "si usa bene anche da telefono"],
+        "polish": ["Ritrovi i dati, ma se chiudi di colpo puoi perdere l'ultima modifica.",
+                   "Ogni modifica resta salvata, e la ricerca trova quello che hai inserito.",
+                   "Salva tutto, cerca bene e si usa comodo anche da telefono."]},
+    3: {"nome": "Account e dati online",
+        "funzioni": ["Account per più persone", "Dati su un server, da ogni dispositivo",
+                     "Funzioni in più oltre a quella principale"],
+        "cura": ["si confonde con due utenti insieme", "tiene separati i dati di ognuno",
+                 "regge tanti utenti nello stesso momento"],
+        "polish": ["Ognuno ha il suo account, ma con due persone insieme qualcosa si mescola.",
+                   "Ognuno vede solo i suoi dati, da qualsiasi dispositivo.",
+                   "Regge tante persone insieme, e ogni account resta separato e veloce."],
+        "limite": "Niente app da scaricare dagli store"},
 }
-SIZE_NOT = {
-    1: "niente account, niente dati salvati, niente extra",
-    2: "niente server vero per molte persone insieme",
-    3: "",
-}
-QUAL_GET = {1: [], 2: ["messaggi chiari quando qualcosa va storto", "README con i comandi per avviarlo"],
-            3: ["test automatici su tutte le funzioni", "grafica curata, si usa bene da telefono",
-                "documentazione e casi limite gestiti"]}
-QUAL_NOT = {1: ["niente test: se cambi qualcosa può rompersi", "grafica essenziale, da sistemare"],
-            2: ["grafica pulita ma semplice, non rifinita nei dettagli"],
-            3: []}
-POLISH = {
-    1: "Grezzo: funziona sul percorso principale, ma basta un dato strano per vederlo inciampare.",
-    2: "Ordinato e affidabile per l'uso di tutti i giorni, con qualche test sulle parti delicate.",
-    3: "Curato: riletto da una revisione, testato anche nei casi strani, pronto da mostrare.",
-}
-TITLE = {
-    (1, 1): "Una bozza che funziona", (1, 2): "Piccolo ma affidabile", (1, 3): "Piccolo e rifinito",
-    (2, 1): "Più schermate, ancora grezze", (2, 2): "Un'app vera, ordinata", (2, 3): "Un'app curata in ogni parte",
-    (3, 1): "Tutto il sistema, di corsa", (3, 2): "Sistema completo e solido", (3, 3): "Prodotto quasi da lancio",
+DEMO_CARE = {
+    1: {"manca": ["Niente test: se cambi qualcosa può rompersi", "Grafica essenziale, da sistemare"]},
+    2: {"manca": ["Grafica pulita ma semplice, non rifinita nei dettagli"]},
+    3: {"manca": ["Costa di più e ci mette di più delle altre caselle"]},
 }
 
 
 def fake_items(idea: str) -> Dict[str, dict]:
     s = _subject(idea)
-    out = {}
-    for d in (1, 2, 3):
-        for q in (1, 2, 3):
-            get = [g.format(s=s) for g in SIZE_GET[d][:2 if q == 1 else 3]] + QUAL_GET[q]
-            nots = ([SIZE_NOT[d]] if SIZE_NOT[d] else []) + QUAL_NOT[q]
-            if not nots:
-                nots = ["costa di più e ci mette di più delle altre caselle"]
-            get, nots = [x[:1].upper() + x[1:] for x in get], [x[:1].upper() + x[1:] for x in nots]
-            out[f"{d}-{q}"] = {"title": TITLE[(d, q)], "get": get[:4], "not": nots[:3], "polish": POLISH[q]}
-    return out
+    sizes = {str(d): dict(v, funzioni=[f.format(s=s) for f in v["funzioni"]])
+             for d, v in DEMO_SIZES.items()}
+    return assemble({"grandezze": sizes, "cura": {str(q): v for q, v in DEMO_CARE.items()}})
 
 
 async def fake_examples(idea: str) -> dict:
