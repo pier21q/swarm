@@ -18,12 +18,14 @@ Server HTTP minimale (solo libreria standard), solo su 127.0.0.1:
   POST /api/github        {name, private, description, remove_secrets}  crea il repo e carica
   POST /api/form          torna al modulo dell'idea
   POST /api/reset         nuovo progetto da zero
-Tutte le POST accettano solo richieste dalla pagina stessa (stessa origine).
+Ogni richiesta deve avere Host localhost/127.0.0.1 sulla porta giusta (contro il DNS rebinding);
+le POST vogliono anche la stessa origine e il token che il server mette nella pagina.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import signal
 import webbrowser
 from pathlib import Path
@@ -45,6 +47,8 @@ class WebDashboard:
         self.closing = False
         self.examples: Dict[str, dict] = {}  # idea → esempi (si rifà la richiesta solo se l'idea cambia)
         self._examples_lock = asyncio.Lock()
+        self.port = 0  # la porta su cui ascolta davvero, per controllare l'Host
+        self.token = secrets.token_urlsafe(24)  # sta nella pagina, le POST lo devono rimandare
         project.listeners.append(self._broadcast)
 
     def state(self) -> dict:
@@ -92,18 +96,27 @@ class WebDashboard:
                 k, v = ln.split(":", 1)
                 headers[k.strip().lower()] = v.strip()
         body = b""
-        length = int(headers.get("content-length") or 0)
-        if length:
-            if length > 1 << 20:
-                writer.close()
-                return
-            body = await reader.readexactly(length)
         path = target.split("?", 1)[0]
 
         try:
+            try:
+                length = int(headers.get("content-length") or 0)
+            except ValueError:
+                length = -1
+            if not 0 <= length <= 1 << 20:
+                await self._send(writer, 400, b"bad request", "text/plain")
+                return
+            if length:
+                body = await reader.readexactly(length)
+            if not self._host_ok(headers):
+                # un nome diverso da localhost vuol dire che la pagina arriva da un altro sito
+                # che punta il suo dominio su 127.0.0.1 (DNS rebinding): niente risposta
+                await self._send(writer, 403, b"forbidden", "text/plain")
+                return
             if method == "GET" and path in ("/", "/index.html"):
-                await self._send(writer, 200, (WEB_DIR / "index.html").read_bytes(),
-                                 "text/html; charset=utf-8")
+                page = (WEB_DIR / "index.html").read_text(encoding="utf-8").replace(
+                    "__SWARM_TOKEN__", self.token, 1)
+                await self._send(writer, 200, page.encode("utf-8"), "text/html; charset=utf-8")
             elif method == "GET" and path == "/events":
                 await self._sse(writer)
                 return
@@ -112,7 +125,8 @@ class WebDashboard:
             elif method == "GET" and path == "/api/advice":
                 await self._send_json(writer, advice_table())
             elif method == "POST" and path.startswith("/api/"):
-                if not self._same_origin(headers):
+                if not self._same_origin(headers) or not secrets.compare_digest(
+                        headers.get("x-swarm-token", ""), self.token):
                     await self._send_json(writer, {"ok": False, "error": "richiesta non permessa"}, 403)
                     return
                 try:
@@ -126,7 +140,7 @@ class WebDashboard:
                     await self._send_json(writer, {"ok": True, **(extra or {})})
             else:
                 await self._send(writer, 404, b"not found", "text/plain")
-        except ConnectionError:
+        except (ConnectionError, asyncio.IncompleteReadError):
             pass
         finally:
             if not writer.is_closing():
@@ -183,6 +197,10 @@ class WebDashboard:
                 self.examples.clear()
             self.examples[idea] = res
             return {**res, "cached": False}
+
+    def _host_ok(self, headers: dict) -> bool:
+        host = headers.get("host", "").lower()
+        return host in {f"localhost:{self.port}", f"127.0.0.1:{self.port}", f"[::1]:{self.port}"}
 
     @staticmethod
     def _same_origin(headers: dict) -> bool:
@@ -249,7 +267,7 @@ async def _main(project: Project, cfg: Optional[dict], port: int, open_browser: 
             continue
         if p != port:
             print(f"porta {port} occupata, uso la {p}")
-        port = p
+        port = dash.port = p
         break
     if server is None:
         raise SystemExit(f"nessuna porta libera tra {port} e {port + 19}: prova con --port")

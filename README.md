@@ -111,13 +111,28 @@ Stesso flusso con pianificatore e agenti finti: non crea niente su disco.
 
 ## Sicurezza e costi
 
-- La dashboard ascolta solo su `localhost` e accetta comandi solo dalla
-  pagina stessa. La cartella del progetto deve stare nella tua home.
-- Gli agenti girano con `acceptEdits`: modificano file solo nel loro worktree.
-  Possono lanciare solo comandi git di lettura e, se lo scegli, i comandi di
-  build/test.
+- La dashboard ascolta solo su `localhost` e risponde solo se la chiami come
+  `localhost` o `127.0.0.1`: un sito che punta il suo nome sul tuo computer
+  (DNS rebinding) riceve un rifiuto. I comandi devono arrivare dalla pagina
+  stessa, con un codice che il server mette nella pagina a ogni avvio. La
+  cartella del progetto deve stare nella tua home.
+- Gli agenti girano con `acceptEdits`: modificano file nel loro worktree e
+  nella cartella dello sciame (`.<progetto>-swarm/`, dove si scambiano i
+  messaggi e dove stanno anche i worktree degli altri). Senza "Lanciare build
+  e test" possono usare solo comandi git di lettura.
+- **Con "Lanciare build e test" acceso gli agenti hanno di fatto una shell
+  completa**: `python3`, `node`, `npx`, `make` e simili eseguono qualsiasi
+  programma con i tuoi permessi, quindi possono leggere e cambiare file fuori
+  dal progetto e usare la rete; `npm install` e `pip install` eseguono script
+  di terzi. Accendilo solo per progetti di cui ti fidi.
+- Se un agente va in errore, esaurisce la spesa o lo fermi, quello che ha fatto
+  viene salvato in un commit sul suo branch `swarm/…` (segnato "NON FINITO") e
+  non viene unito al progetto. Lo trovi nella pagina finale.
 - La spesa massima vale per ogni agente: con 5 agenti a $2 il tetto è $10
   (più pochi centesimi per il pianificatore e meno di un centesimo per gli
   esempi della matrice). Una fase con un modello più economico di quello del
   progetto ha un tetto più basso, mai più alto. Con un abbonamento Claude il
   costo mostrato è una stima e i limiti d'uso si consumano più in fretta.
+- Il costo di un agente lo dice Claude Code solo quando l'agente finisce. Se
+  viene fermato o va in crash prima, il suo costo non è noto: il totale appare
+  come "≥ $…" e la pagina finale dice quali agenti mancano.

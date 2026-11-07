@@ -1,8 +1,59 @@
 # Da fare
 
-Niente in sospeso.
+Dalla revisione del 7 novembre 2026, ancora aperti:
+
+- **Messaggi dal thread sbagliato**: `_merge` e `_prepare_repo` girano in
+  `run_in_executor` e chiamano `bus` → `asyncio.Queue.put_nowait` da un altro
+  thread. Va fatto con `loop.call_soon_threadsafe`.
+- **Merge nel branch attivo**: le fasi uniscono il lavoro nel branch che l'utente
+  ha aperto (anche `main`) senza chiedere. Meglio un branch `swarm/<corsa>`, o
+  almeno mostrare il branch nel piano.
+- La fase dopo parte anche se alcuni agenti sono falliti.
+- Dopo un passaggio di branch in conflitto, se il `git merge` dell'agente crea già
+  il commit e lui non cambia altro, il branch risulta "nessuna modifica".
+- Il compito passa come argomento: se inizia con "-" la CLI lo legge come opzione.
+- `git diff`/`git log` permessi accettano `--output=<file>` e possono scrivere file.
+- Le cartelle `.<progetto>-swarm/` e i branch `swarm/*` si accumulano a ogni corsa.
+- Nessun test automatico (validate_plan, extract_json, swarm_advice,
+  resolve_project_path, _merge su un repo temporaneo) e nessun controllo che
+  `phaseModel`/`phaseBudget` in JS coincidano con Python.
 
 ## Fatto
+
+### Sicurezza, lavoro salvato e costi onesti (7 novembre 2026)
+
+I primi quattro problemi della revisione.
+
+- **DNS rebinding** (`swarm_web.py`): ogni richiesta, anche GET ed `/events`,
+  deve avere Host `localhost`, `127.0.0.1` o `[::1]` sulla porta su cui ascolta
+  davvero, altrimenti 403. In più le POST vogliono un token casuale che il server
+  scrive nella pagina a ogni avvio (`<meta name="swarm-token">`, header
+  `X-Swarm-Token`). Un Content-Length non numerico ora dà 400 invece di lasciare
+  la connessione appesa.
+- **Lavoro perso** (`swarm_core.py`): un agente in errore o fermato fa un commit
+  "NON FINITO" sul suo branch (`save_unfinished`), che non viene unito. La fase
+  aspetta che ogni agente abbia chiuso e salvato (`Worker.closed`) prima di
+  rimuovere i worktree. "Ferma" chiude tutto il gruppo di processi dell'agente
+  (`start_new_session` + `killpg`, SIGKILL dopo 5 s): prima un programma lanciato
+  dall'agente poteva restare vivo. All'uscita swarm aspetta fino a 8 s per salvare.
+- **Costi** (`swarm_core.py`, `swarm_project.py`, `web/index.html`): chi si chiude
+  senza l'evento finale della CLI (fermato, crash, anche il pianificatore annullato)
+  ha `cost_missing`. In alto il costo diventa "≥ $…" con la spiegazione, la pagina
+  finale dice "per almeno $…" e quali agenti mancano; scheda e dettaglio
+  dell'agente dicono "costo non noto" e "lavoro salvato".
+- **Build e test** (`web/index.html`, `README.md`): avviso sotto l'interruttore
+  (con quei comandi un agente esegue qualsiasi programma con i tuoi permessi) e
+  README corretto: anche senza, gli agenti possono scrivere nella cartella dello
+  sciame, dove ci sono i worktree degli altri.
+- Provato: curl sul server demo (Host estraneo su GET e POST, POST senza token o
+  con token sbagliato → 403; localhost e 127.0.0.1 con token → 200; Content-Length
+  "abc" → 400). Con un finto `claude` (script) su un repo temporaneo: l'agente
+  finito fa il commit normale, quello in crash e quello fermato salvano il lavoro
+  sul branch, che sopravvive alla rimozione dei worktree; "Ferma" chiude in 0,2 s,
+  l'uscita in 0,5 s, nessun processo rimasto. In demo: fermando un agente il costo
+  diventa "≥" e la pagina finale lo dice; avviso visibile a desktop e a 375px.
+  Non provato con agenti veri: non so con quale evento chiude la CLI quando
+  esaurisce il budget, ma il salvataggio vale per qualsiasi chiusura non riuscita.
 
 ### Quanti agenti per fase, nel piano (6 novembre 2026)
 

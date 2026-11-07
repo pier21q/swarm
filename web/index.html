@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="swarm-token" content="__SWARM_TOKEN__">
 <title>swarm</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23161B2E'/%3E%3Cline x1='16' y1='6' x2='16' y2='10' stroke='%2345C4A2' stroke-width='2' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='5' r='2.3' fill='%23FF5A1F'/%3E%3Crect x='4' y='14' width='3' height='6' rx='1.5' fill='%2345C4A2'/%3E%3Crect x='25' y='14' width='3' height='6' rx='1.5' fill='%2345C4A2'/%3E%3Crect x='6.5' y='9.5' width='19' height='15.5' rx='4.5' fill='%2345C4A2'/%3E%3Ccircle cx='12' cy='16' r='2.3' fill='%23161B2E'/%3E%3Ccircle cx='20' cy='16' r='2.3' fill='%23161B2E'/%3E%3Crect x='12' y='20.5' width='8' height='2' rx='1' fill='%23161B2E'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -554,6 +555,7 @@ textarea.idea:focus-visible { box-shadow: none; border-bottom-color: var(--ink);
   transition: border-color .18s;
 }
 .switch:hover { border-color: var(--line-2); }
+.switch .sw-warn { display: block; margin-top: 6px; padding-left: 10px; border-left: 3px solid var(--amber); color: var(--dim); font-size: 13px; line-height: 1.45; }
 .switch input { position: absolute; top: 20px; left: 20px; opacity: 0; width: 1px; height: 1px; margin: 0; }
 .sw { position: relative; width: 44px; height: 26px; border-radius: 13px; background: var(--line-2); transition: background-color .18s; margin-top: 2px; }
 .sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #FFFFFF; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform .18s; }
@@ -831,7 +833,7 @@ body[data-studio] .done-actions { margin-top: 40px; align-items: center; gap: 12
         <section class="perm" aria-labelledby="permTitle">
           <div class="perm-text">
             <h2 id="permTitle">Permessi</h2>
-            <p>Gli agenti modificano i file solo nella loro copia del progetto e possono sempre leggere git. In più possono:</p>
+            <p>Gli agenti modificano i file nella loro copia del progetto e nella cartella dello sciame accanto, dove si scambiano i messaggi (lì ci sono anche le copie degli altri agenti). Possono sempre leggere git. In più possono:</p>
           </div>
           <label class="switch">
             <input type="checkbox" id="fBuild" role="switch">
@@ -839,6 +841,7 @@ body[data-studio] .done-actions { margin-top: 40px; align-items: center; gap: 12
             <span class="sw-text">
               <b>Lanciare build e test</b>
               <span>npm, node, python, pytest, cargo, go, make. Così controllano da soli che il progetto funzioni.</span>
+              <span class="sw-warn">Attenzione: con questi comandi un agente può eseguire qualsiasi programma con i tuoi permessi, quindi leggere e cambiare file fuori dal progetto e usare la rete. Anche installare pacchetti (npm, pip) esegue codice di altri. Accendilo solo per progetti di cui ti fidi.</span>
               <em id="buildRec" hidden>Consigliato per questa squadra</em>
             </span>
           </label>
@@ -962,6 +965,7 @@ body[data-studio] .done-actions { margin-top: 40px; align-items: center; gap: 12
 <script>
 "use strict";
 const $ = (s) => document.querySelector(s);
+const TOKEN = document.querySelector('meta[name="swarm-token"]').content;  // lo mette il server
 const STATUS = { waiting: "in attesa", starting: "avvio", running: "al lavoro", done: "finito", error: "errore", stopped: "fermato" };
 const PULSE = { assign: "#5fd7ff", tool: "#e07a55", msg: "#f0c674", ok: "#7bd88f", err: "#ff6b6b" };
 const SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
@@ -981,6 +985,9 @@ function el(tag, cls, text) {
   return e;
 }
 const fmtCost = (c) => "$" + (c || 0).toFixed(2);
+/* chi è stato fermato o è andato in crash non dice quanto ha speso: il totale è solo un minimo */
+const missingNote = (m) => `${m.length === 1 ? "1 agente si è chiuso" : `${m.length} agenti si sono chiusi`} prima `
+  + "della fine senza dire quanto ha speso: il costo vero è più alto";
 function fmtDur(sec) {
   sec = Math.max(0, Math.floor(sec));
   const m = Math.floor(sec / 60), s = sec % 60;
@@ -997,7 +1004,8 @@ function toast(msg, err) {
   toastT = setTimeout(() => t.classList.remove("show"), err ? 5000 : 2500);
 }
 async function api(path, body) {
-  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  const r = await fetch(path, { method: "POST", body: JSON.stringify(body || {}),
+    headers: { "Content-Type": "application/json", "X-Swarm-Token": TOKEN } });
   const j = await r.json().catch(() => ({ ok: false, error: "risposta non valida" }));
   if (!j.ok) throw new Error(j.error || "errore");
   return j;
@@ -1047,7 +1055,9 @@ function render() {
   const running = C ? C.agents.filter((a) => a.status === "running" || a.status === "starting").length : 0;
   $("#sRunning").textContent = P.stage === "running" ? running : 0;
   $("#sMsgs").textContent = P.messages;
-  $("#sCost").textContent = fmtCost(P.cost);
+  const miss = P.cost_missing || [];
+  $("#sCost").textContent = (miss.length ? "≥ " : "") + fmtCost(P.cost);
+  $("#sCost").title = miss.length ? `${missingNote(miss)} (${miss.join(", ")})` : "";
   if (P.started_at) $("#sTime").textContent = fmtDur((P.ended_at || Date.now() / 1000) - P.started_at);
   $("#sendAll").hidden = P.stage !== "running";
   renderSteps();
@@ -1970,7 +1980,9 @@ function updateCore(s) {
     c.fill.style.width = (pct == null ? (a.status === "running" ? 6 : 0) : pct) + "%";
     c.pct.textContent = pct == null ? (a.status === "running" ? `turno ${a.turns}` : "—") : pct + "%";
     c.steps.textContent = a.total_steps ? `${a.done_steps}/${a.total_steps} passi` : a.tools ? `${a.tools} tool` : "";
-    c.last.textContent = a.status === "done" || a.status === "error" ? `${fmtCost(a.cost)} · ${a.tools} tool` : a.last || (a.status === "waiting" ? "in attesa…" : "");
+    c.last.textContent = ["done", "error", "stopped"].includes(a.status) && (a.cost_missing || a.status !== "stopped")
+      ? `${a.cost_missing ? "costo non noto" : fmtCost(a.cost)} · ${a.tools} tool${a.saved ? " · lavoro salvato" : ""}`
+      : a.last || (a.status === "waiting" ? "in attesa…" : "");
     c.root.setAttribute("aria-label", `${a.label} ${a.name}, ${STATUS[a.status] || a.status}${pct != null ? ", " + pct + "%" : ""}`);
   });
   if (openIdx >= 0) renderDrawer();
@@ -2076,8 +2088,10 @@ function renderDrawer() {
   const kv = el("dl", "kv");
   const dur = a.started ? fmtDur((a.ended || Date.now() / 1000) - a.started) : "—";
   [["stato", STATUS[a.status] || a.status], ["modello", a.model || "—"], ["branch", a.branch || "—"],
-   ["tool", a.tools], ["turni", a.turns], ["costo", fmtCost(a.cost)], ["durata", dur],
-   ["commit", a.committed === true ? "fatto" : a.committed === false ? "nessuna modifica" : "—"]]
+   ["tool", a.tools], ["turni", a.turns],
+   ["costo", a.cost_missing ? "non noto: si è chiuso prima della fine" : fmtCost(a.cost)], ["durata", dur],
+   ["commit", a.saved ? "lavoro non finito salvato sul branch, non unito"
+     : a.committed === true ? "fatto" : a.committed === false ? "nessuna modifica" : "—"]]
     .forEach(([k, v]) => kv.append(el("dt", null, k), el("dd", null, String(v))));
   body.append(el("h3", null, "info"), kv);
   body.append(el("h3", null, `piano ${a.total_steps ? `· ${a.done_steps}/${a.total_steps}` : ""}`));
@@ -2136,12 +2150,17 @@ function renderDone() {
   let sum = `${agents} agenti in ${P.phases.length} fasi`;
   sum += files ? ` hanno cambiato ${files} file` : " hanno lavorato";
   if (dur) sum += ` in ${dur}`;
-  sum += `, per circa ${fmtCost(P.cost)}.`;
+  const miss = P.cost_missing || [];
+  sum += miss.length ? `, per almeno ${fmtCost(P.cost)}.` : `, per circa ${fmtCost(P.cost)}.`;
   if (P.demo) sum += " È una demo: niente di tutto questo è reale.";
   head.append(el("p", "fin-sum", sum));
   if (P.plan && P.plan.goal) head.append(el("p", "fin-goal", P.plan.goal));
   box.append(head);
   if (P.error) box.append(el("div", "alert", P.error));
+  if (miss.length) box.append(el("div", "note", `${missingNote(miss)}. Quali: ${miss.join(", ")}.`));
+  const saved = P.phases.flatMap((p) => p.saved || []);
+  if (saved.length) box.append(el("div", "note", "Lavoro non finito, salvato ma non unito al progetto "
+    + "(agenti in errore o fermati). Lo trovi su questi branch, per esempio con git log o git merge: " + saved.join(", ")));
   if (ok && conflicts.length) box.append(el("div", "note", "Questi branch non si sono uniti da soli e vanno uniti a mano: " + conflicts.join(", ")));
 
   if (path && ok) {
@@ -2170,6 +2189,8 @@ function renderDone() {
     li.append(el("span", null, bits.join(", ")));
     if (r.errors.length) li.append(el("span", "w", "errori: " + r.errors.join(", ")));
     if (r.conflicts.length) li.append(el("span", "w", "in conflitto: " + r.conflicts.join(", ")));
+    if ((r.saved || []).length) li.append(el("span", "w", "non finiti, salvati su: " + r.saved.join(", ")));
+    if ((r.cost_missing || []).length) li.append(el("span", "w", "costo non noto: " + r.cost_missing.join(", ")));
     ol.append(li);
   });
   sec.append(ol);

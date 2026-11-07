@@ -205,6 +205,7 @@ class Project:
         self.error = ""
         self.cost_done = 0.0
         self.planner_cost = 0.0
+        self.cost_missing: List[str] = []  # chi ha speso senza dire quanto (fermato, crash): il costo è un minimo
         self.started_at = 0.0
         self.ended_at = 0.0
         self.stop_requested = False
@@ -253,6 +254,7 @@ class Project:
             "plan": self.plan, "phase_idx": self.phase_idx, "phases": self.phases,
             "repo": str(self.repo or ""), "repo_state": self.repo_state,
             "final": self.final, "error": self.error, "cost": round(self.cost, 4),
+            "cost_missing": self.cost_missing + (self.core.cost_missing if self.core and self.stage == "running" else []),
             "messages": self.messages, "started_at": self.started_at, "ended_at": self.ended_at,
             "advice": self.advice, "github": self.github,
             "projects_dir": str(PROJECTS_DIR),
@@ -417,7 +419,7 @@ class Project:
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, limit=64 * 1024 * 1024)
         self._planner_proc = proc
         err_task = asyncio.ensure_future(proc.stderr.read())
-        result, is_error = "", False
+        result, is_error, got_result = "", False, False
         while True:
             line = await proc.stdout.readline()
             if not line:
@@ -431,6 +433,7 @@ class Project:
                     if isinstance(c, dict) and c.get("type") == "tool_use":
                         self.bus("pianificatore", "tool", describe_tool(c.get("name", "?"), c.get("input") or {}), "tool")
             elif ev.get("type") == "result":
+                got_result = True
                 result = str(ev.get("result") or "")
                 is_error = bool(ev.get("is_error"))
                 self.planner_cost += float(ev.get("total_cost_usd") or 0)
@@ -438,6 +441,8 @@ class Project:
         stderr = (await err_task).decode("utf-8", "replace").strip()
         if self._planner_proc is proc:
             self._planner_proc = None
+        if not got_result:
+            self.cost_missing.append("pianificatore")
         if self.stop_requested:
             return ""
         if is_error or rc != 0:
@@ -504,7 +509,8 @@ class Project:
         self.ended_at = 0.0
         self.final = None
         self.phases = [{"name": p["name"], "status": "pending", "merged": [], "conflicts": [],
-                        "errors": [], "cost": 0.0} for p in self.plan["phases"]]
+                        "errors": [], "saved": [], "cost_missing": [], "cost": 0.0}
+                       for p in self.plan["phases"]]
         self._task = asyncio.ensure_future(self._run())
 
     def start_from_config(self, cfg: dict) -> None:
@@ -574,6 +580,9 @@ class Project:
             res["cost"] = round(core.total_cost, 4)
             self.cost_done += core.total_cost
             res["errors"] = [w.label for w in core.agents if w.status == "error"]
+            res["saved"] = [w.branch for w in core.agents if w.saved]
+            res["cost_missing"] = core.cost_missing
+            self.cost_missing += [f"{ph['name']}: {x}" for x in core.cost_missing]
             if self.stop_requested:
                 res["status"] = "stopped"
                 self.stage = "stopped"
@@ -626,7 +635,8 @@ class Project:
         return merged, conflicts
 
     def _cleanup(self, core: Swarm) -> None:
-        """Rimuove i worktree (i branch restano, così nulla va perso)."""
+        """Rimuove i worktree. I branch restano, e il lavoro degli agenti non finiti è già
+        salvato sul loro branch (Swarm.save_unfinished), così nulla va perso."""
         if self.demo or not self.repo:
             return
         for w in core.agents:
@@ -763,6 +773,7 @@ class Project:
         self.github = None
         self.cost_done = 0.0
         self.planner_cost = 0.0
+        self.cost_missing = []
         self.started_at = 0.0
         self.ended_at = 0.0
 

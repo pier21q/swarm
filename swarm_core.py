@@ -16,6 +16,7 @@ import os
 import random
 import re
 import shutil
+import signal
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -127,6 +128,10 @@ class Worker:
     ended: float = 0.0
     proc: Optional[asyncio.subprocess.Process] = None
     committed: Optional[bool] = None
+    saved: bool = False         # lavoro non finito (errore/fermato) salvato sul suo branch, non unito
+    got_result: bool = False    # la CLI ha mandato l'evento finale, che porta il costo
+    cost_missing: bool = False  # partito ma chiuso senza evento finale: il costo vero non è noto
+    closed: bool = False        # il processo è chiuso e commit/salvataggio sono finiti
 
     @property
     def active(self) -> bool:
@@ -158,7 +163,7 @@ class Worker:
             "last": self.last, "last_text": self.last_text[-2000:],
             "result_text": self.result_text[-4000:], "model": self.model,
             "branch": self.branch, "started": self.started, "ended": self.ended,
-            "committed": self.committed,
+            "committed": self.committed, "saved": self.saved, "cost_missing": self.cost_missing,
         }
 
 
@@ -291,12 +296,18 @@ class Swarm:
     def total_cost(self) -> float:
         return sum(w.cost for w in self.agents)
 
+    @property
+    def cost_missing(self) -> List[str]:
+        """Agenti chiusi senza dire quanto hanno speso: il totale è un minimo, non il vero."""
+        return [w.label for w in self.agents if w.cost_missing]
+
     def snapshot(self) -> dict:
         return {
             "run_id": self.run_id, "demo": self.demo, "goal": self.cfg.get("goal", ""),
             "model": self.cfg.get("model", ""), "repo": str(self.repo or ""),
             "finished": self.finished, "messages": self.messages,
-            "cost": round(self.total_cost, 4), "started_at": self.started_at,
+            "cost": round(self.total_cost, 4), "cost_missing": self.cost_missing,
+            "started_at": self.started_at,
             "agents": [w.to_dict() for w in self.agents],
         }
 
@@ -326,8 +337,19 @@ class Swarm:
                 return
         for wk in self.agents:
             coro = self.run_fake(wk) if self.demo else self.run_agent(wk)
-            self._tasks.append(asyncio.ensure_future(coro))
+            self._tasks.append(asyncio.ensure_future(self._run_one(wk, coro)))
         self._tasks.append(asyncio.ensure_future(self._poll_loop()))
+
+    async def _run_one(self, wk: Worker, coro) -> None:
+        try:
+            await coro
+        finally:
+            if wk.started and not wk.got_result and (self.demo or wk.proc is not None):
+                wk.cost_missing = True
+                self.bus("orchestrator", wk.label,
+                         "chiuso prima della fine: il suo costo non è noto e non è nel totale", "warn")
+            wk.closed = True
+            self.check_finished()
 
     async def _poll_loop(self) -> None:
         while not self.finished:
@@ -338,16 +360,42 @@ class Swarm:
         for wk in self.agents:
             if wk.status in ("waiting", "starting", "running"):
                 wk.status = "stopped"
-                if wk.proc and wk.proc.returncode is None:
-                    try:
-                        wk.proc.terminate()
-                    except ProcessLookupError:
-                        pass
+                self._terminate(wk)
                 self.bus("orchestrator", wk.label, "fermato", "err")
         self.check_finished()
 
+    def _terminate(self, wk: Worker) -> None:
+        """Ferma l'agente e i programmi che ha lanciato (stesso gruppo di processi): se uno
+        resta vivo tiene aperto l'output e swarm aspetterebbe lui per salvare e pulire."""
+        proc = wk.proc
+        if not proc or proc.returncode is not None:
+            return
+
+        def sig(s: int) -> None:
+            try:
+                os.killpg(proc.pid, s)
+            except (ProcessLookupError, PermissionError, AttributeError):
+                try:
+                    proc.send_signal(s)
+                except ProcessLookupError:
+                    pass
+
+        sig(signal.SIGTERM)
+
+        async def later() -> None:  # chi non si chiude entro 5 secondi viene ucciso
+            for _ in range(20):
+                if proc.returncode is not None:
+                    break
+                await asyncio.sleep(0.25)
+            sig(signal.SIGKILL)  # anche a processo chiuso: toglie i figli rimasti nel gruppo
+        self._tasks.append(asyncio.ensure_future(later()))
+
     async def shutdown(self) -> None:
         await self.stop_all()
+        # qualche secondo per chiudere i processi e salvare il lavoro non finito sui branch
+        pending = [t for t in self._tasks if not t.done()]
+        if pending:
+            await asyncio.wait(pending, timeout=8)
         for t in self._tasks:
             if not t.done():
                 t.cancel()
@@ -357,8 +405,8 @@ class Swarm:
 
     def check_finished(self) -> None:
         if not self.finished and all(w.status in ("done", "error", "stopped") for w in self.agents):
-            # aspetta anche i commit in corso, così chi fa wait() trova i branch pronti
-            if any(w.status == "done" and w.committed is None and not self.demo for w in self.agents):
+            # aspetta anche i commit e i salvataggi in corso: dopo wait() i worktree vengono rimossi
+            if any(not w.closed for w in self.agents if w.started):
                 return
             self.finished = True
             if self._done:
@@ -393,11 +441,7 @@ class Swarm:
         for wk in self.agents:
             if wk.idx == idx and wk.status in ("waiting", "starting", "running"):
                 wk.status = "stopped"
-                if wk.proc and wk.proc.returncode is None:
-                    try:
-                        wk.proc.terminate()
-                    except ProcessLookupError:
-                        pass
+                self._terminate(wk)
                 self.bus("orchestrator", wk.label, "fermato dall'utente", "err")
         self.check_finished()
 
@@ -407,6 +451,10 @@ class Swarm:
         s = [f"\nswarm {self.run_id} · {title}\n"]
         for w in self.agents:
             extra = "" if self.demo else {True: "commit fatto", False: "nessuna modifica", None: ""}[w.committed]
+            if w.saved:
+                extra = "lavoro non finito salvato, non unito"
+            if w.cost_missing:
+                extra += " · costo non noto"
             s.append(f"  {w.label:9} {w.name:14} {w.status:8} ${w.cost:5.2f}  {w.branch}  {extra}")
         if self.demo or not self.repo:
             return s
@@ -482,11 +530,10 @@ class Swarm:
                 *self.build_cmd(wk), cwd=str(wk.cwd), env=env,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                limit=64 * 1024 * 1024)
+                limit=64 * 1024 * 1024, start_new_session=True)
         except Exception as e:  # noqa: BLE001
             wk.status = "error"
             self.bus(wk.label, "orchestrator", f"non parte: {e}", "err")
-            self.check_finished()
             return
         wk.proc = proc
         err_task = asyncio.ensure_future(proc.stderr.read())
@@ -510,7 +557,8 @@ class Swarm:
         self.poll_files()
         if wk.status == "done":
             await self.commit(wk)
-        self.check_finished()
+        else:
+            await self.save_unfinished(wk)
 
     async def commit(self, wk: Worker) -> None:
         def _do() -> bool:
@@ -530,6 +578,26 @@ class Swarm:
             self.bus("orchestrator", wk.label, f"commit su {wk.branch}", "ok")
         else:
             self.bus("orchestrator", wk.label, "nessuna modifica da committare")
+
+    async def save_unfinished(self, wk: Worker) -> None:
+        """Agente in errore o fermato: il lavoro fatto (e pagato) finisce in un commit sul suo
+        branch, così sopravvive alla rimozione del worktree. Non viene unito al progetto."""
+        def _do() -> bool:
+            if not wk.cwd or not wk.cwd.exists() or not git(wk.cwd, "status", "--porcelain"):
+                return False
+            git(wk.cwd, "add", "-A")
+            git(wk.cwd, *git_id(wk.cwd), "commit", "-q", "--no-verify", "-m",
+                f"swarm({wk.name}) NON FINITO ({wk.status}): {short(wk.task, 50)}\n\n"
+                "Lavoro salvato da swarm quando l'agente si è chiuso prima della fine. "
+                "Non è stato unito al progetto.")
+            return True
+        try:
+            wk.saved = await asyncio.get_running_loop().run_in_executor(None, _do)
+        except Exception as e:  # noqa: BLE001
+            self.bus("orchestrator", wk.label, f"non riesco a salvare il lavoro non finito: {short(str(e), 200)}", "err")
+            return
+        if wk.saved:
+            self.bus("orchestrator", wk.label, f"lavoro non finito salvato su {wk.branch} (non unito)", "warn")
 
     # eventi stream-json ----------------------------------------------------
     def handle_event(self, wk: Worker, ev: dict) -> None:
@@ -551,6 +619,7 @@ class Swarm:
                 elif c.get("type") == "text" and c.get("text", "").strip():
                     wk.last_text = c["text"].strip()
         elif t == "result":
+            wk.got_result = True
             wk.cost = float(ev.get("total_cost_usd") or 0)
             wk.result_text = str(ev.get("result") or "")
             ok = not ev.get("is_error") and ev.get("subtype", "success") == "success"
