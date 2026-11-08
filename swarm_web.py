@@ -10,7 +10,8 @@ Server HTTP minimale (solo libreria standard), solo su 127.0.0.1:
   POST /api/replan        {feedback, agents?: [{phase, agents}]}  agents = quanti agenti per fase
   POST /api/examples      {idea}  cosa aspettarsi da ognuna delle 9 caselle della matrice
   POST /api/start         {plan}
-  POST /api/stop          ferma pianificazione o agenti
+  POST /api/stop          ferma pianificazione o agenti (in pausa: si ferma lì)
+  POST /api/continue      in pausa dopo agenti in errore: continua con la fase dopo
   POST /api/agent/stop    {idx}
   POST /api/message       {idx | null, text}
   POST /api/open          {what: folder|terminal|file, rel}  apre il progetto finito
@@ -158,6 +159,8 @@ class WebDashboard:
             p.start(d.get("plan"))
         elif path == "/api/stop":
             await p.stop()
+        elif path == "/api/continue":
+            p.resume()
         elif path == "/api/agent/stop":
             if p.stage != "running" or not p.core:
                 raise ValueError("nessun agente al lavoro")

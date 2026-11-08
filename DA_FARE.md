@@ -1,24 +1,62 @@
 # Da fare
 
-Dalla revisione del 7 novembre 2026, ancora aperti:
+Niente di aperto dalla revisione del 7 novembre 2026.
 
-- **Messaggi dal thread sbagliato**: `_merge` e `_prepare_repo` girano in
-  `run_in_executor` e chiamano `bus` → `asyncio.Queue.put_nowait` da un altro
-  thread. Va fatto con `loop.call_soon_threadsafe`.
-- **Merge nel branch attivo**: le fasi uniscono il lavoro nel branch che l'utente
-  ha aperto (anche `main`) senza chiedere. Meglio un branch `swarm/<corsa>`, o
-  almeno mostrare il branch nel piano.
-- La fase dopo parte anche se alcuni agenti sono falliti.
-- Dopo un passaggio di branch in conflitto, se il `git merge` dell'agente crea già
-  il commit e lui non cambia altro, il branch risulta "nessuna modifica".
-- Il compito passa come argomento: se inizia con "-" la CLI lo legge come opzione.
-- `git diff`/`git log` permessi accettano `--output=<file>` e possono scrivere file.
-- Le cartelle `.<progetto>-swarm/` e i branch `swarm/*` si accumulano a ogni corsa.
-- Nessun test automatico (validate_plan, extract_json, swarm_advice,
-  resolve_project_path, _merge su un repo temporaneo) e nessun controllo che
-  `phaseModel`/`phaseBudget` in JS coincidano con Python.
+Da tenere d'occhio: le cartelle `.<progetto>-swarm/` e i branch `swarm/*` lasciati
+dalle corse fatte prima dell'8 novembre non vengono tolti da soli.
 
 ## Fatto
+
+### Il resto della revisione (8 novembre 2026)
+
+Gli altri otto punti della revisione del 7 novembre.
+
+- **Bus dal thread sbagliato** (`swarm_project.py`): `_merge`, `_prepare_repo` e
+  ora `_open_work_branch` girano in `run_in_executor` e chiamavano `bus`, che
+  tocca la storia e le code SSE di asyncio da un altro thread. Ora `bus`, se non
+  è nel loop, si rimanda al loop con `call_soon_threadsafe` (l'ordine resta
+  quello giusto).
+- **Merge nel branch dell'utente** (`swarm_project.py`, `web/index.html`): in un
+  progetto esistente il lavoro va in un branch nuovo `swarm/<data-ora>`, aperto
+  nella cartella; il branch dell'utente resta com'era. In un progetto nuovo
+  (repository creato da swarm) si lavora sul suo unico branch, come prima. Il
+  piano ha la riga "Branch"; la pagina finale dice dove è il lavoro e come
+  portarlo nel proprio branch. La scheda GitHub dice "il branch aperto ora".
+- **La fase dopo partiva anche con agenti falliti** (`swarm_project.py`,
+  `swarm_web.py`, `web/index.html`): nuovo stato `paused`. Se in una fase (non
+  l'ultima) un agente va in errore, swarm unisce il lavoro degli altri e si
+  ferma: la pagina "In pausa" dice chi non ha finito, con "Continua con
+  <fase>" (`POST /api/continue`) e "Fermati qui". Un agente fermato a mano
+  dall'utente non mette in pausa: l'ha scelto lui.
+- **Merge fatto dall'agente visto come "nessuna modifica"** (`swarm_core.py`):
+  `commit` e `save_unfinished` guardano anche se il branch ha commit oltre il
+  punto di partenza (`Swarm.base`), non solo i file cambiati.
+- **Compito che inizia con "-"** (`swarm_core.py`, `swarm_project.py`): compito
+  dell'agente e prompt del pianificatore passano su stdin, non come argomento.
+- **`git diff`/`git log --output=<file>`** (`swarm_project.py`, `swarm_core.py`):
+  sempre vietato con `--disallowedTools "Bash(git * --output*)"` (le regole di
+  divieto vincono su quelle permesse).
+- **Cartelle e branch che si accumulano** (`swarm_project.py`, `swarm_core.py`):
+  a fine fase via worktree, cartella della corsa (e `.<progetto>-swarm/` se resta
+  vuota) e branch degli agenti con `git branch -d`, che da solo tiene quelli non
+  uniti (non finiti, in conflitto). Un branch in conflitto viene tolto dopo che
+  l'agente della fase dopo l'ha unito. Il log della fase si chiude prima.
+- **Test** (`tests/`): 30 test con `unittest`, senza dipendenze:
+  `extract_json`, `validate_plan`, `resolve_project_path`, `swarm_advice`, il
+  confronto di `phaseModel`/`phaseBudget` della pagina con Python, e una pipeline
+  vera su un repository temporaneo con un finto `claude` (merge, conflitto
+  passato e unito, pausa e ripresa, branch dell'utente intatto, pulizia, compito
+  su stdin, divieto di `--output`, bus dal thread del loop). Ho controllato che
+  il test del thread fallisca togliendo la correzione.
+- Provato: test tutti verdi. In demo, con un lanciatore che fa fallire apposta un
+  agente di Sviluppo: riga "Branch" nel piano, pagina "In pausa" (desktop scuro,
+  375px chiaro, senza scorrimento orizzontale), "Continua con Integrazione",
+  pagina finale con la nota sul branch, nessun errore in console.
+  Non provato con agenti veri: che `claude -p` legga il compito da stdin (è il
+  modo documentato, ma qui l'ho provato solo con il finto) e che la regola con
+  `*` in mezzo blocchi davvero `git diff --output=…` (la sintassi è quella
+  dell'aiuto della CLI 2.1.318). "Fermati qui" l'ho provato solo nel test.
+
 
 ### Sicurezza, lavoro salvato e costi onesti (7 novembre 2026)
 

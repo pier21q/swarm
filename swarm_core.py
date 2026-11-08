@@ -267,6 +267,7 @@ class Swarm:
         self.run_id = cfg.get("run_id") or time.strftime("%Y%m%d-%H%M%S")
         self.started_at = time.time()
         self._bus_file = None
+        self.base = ""  # commit da cui partono i worktree: dice se un agente ha fatto commit suoi (merge)
         self._tasks: List[asyncio.Future] = []
         self._done: Optional[asyncio.Event] = None  # creato in start(), dentro il loop
 
@@ -283,7 +284,7 @@ class Swarm:
             self.messages += 1
         entry = {"ts": time.time(), "src": src, "dst": dst, "msg": msg, "kind": kind}
         self.history.append(entry)
-        if self._bus_file:
+        if self._bus_file and not self._bus_file.closed:
             arrow = "  ⚙ " if kind == "tool" else f" → {dst}  "
             self._bus_file.write(time.strftime("%H:%M:%S ") + src + arrow + msg + "\n")
             self._bus_file.flush()
@@ -399,6 +400,9 @@ class Swarm:
         for t in self._tasks:
             if not t.done():
                 t.cancel()
+        self.close_log()
+
+    def close_log(self) -> None:
         if self._bus_file:
             self._bus_file.close()
             self._bus_file = None
@@ -462,10 +466,10 @@ class Swarm:
         if ready:
             s.append(f"\nPer unire il lavoro nel tuo branch attuale (da {self.repo}):")
             s += [f"  git merge {w.branch}" for w in ready]
-        if any(w.cwd for w in self.agents):
+        if any(w.cwd and w.cwd.exists() for w in self.agents):
             s.append("\nPer eliminare i worktree quando hai finito:")
-            s += [f"  git worktree remove --force {w.cwd}" for w in self.agents if w.cwd]
-        if self.swarm_dir:
+            s += [f"  git worktree remove --force {w.cwd}" for w in self.agents if w.cwd and w.cwd.exists()]
+        if self.swarm_dir and (self.swarm_dir / "bus.log").exists():
             s.append(f"\nLog del bus: {self.swarm_dir / 'bus.log'}")
         return s
 
@@ -477,7 +481,7 @@ class Swarm:
         self.claude = find_claude(self.cfg.get("claude_bin", "claude"))
         if not self.claude:
             raise RuntimeError(CLAUDE_MISSING)
-        git(repo, "rev-parse", "HEAD")  # serve almeno un commit
+        self.base = git(repo, "rev-parse", "HEAD")  # serve almeno un commit
         if git(repo, "status", "--porcelain"):
             self.bus("orchestrator", "you",
                      "attenzione: ci sono modifiche non committate, i worker partono dall'ultimo commit",
@@ -493,7 +497,7 @@ class Swarm:
             wk.outbox_file.touch()
             wk.inbox_file = self.swarm_dir / f"{wk.label}.inbox"
             wk.inbox_file.touch()
-            git(repo, "worktree", "add", "-q", "-b", wk.branch, str(wk.cwd), "HEAD")
+            git(repo, "worktree", "add", "-q", "-b", wk.branch, str(wk.cwd), self.base)
         self.bus("orchestrator", "all", f"creati {len(self.agents)} worktree in {self.swarm_dir}")
 
     def build_cmd(self, wk: Worker) -> List[str]:
@@ -504,7 +508,9 @@ class Swarm:
             goal=self.cfg.get("goal", "(non specificato)"), cwd=wk.cwd,
             branch=wk.branch, others=others, progress=wk.progress_file,
             outbox=wk.outbox_file, inbox=wk.inbox_file, swarm_dir=self.swarm_dir)
-        cmd = [self.claude or find_claude(self.cfg.get("claude_bin", "claude")) or "claude", "-p", wk.task,
+        # il compito arriva da stdin (run_agent), non come argomento: uno che inizia con "-"
+        # verrebbe letto dalla CLI come un'opzione
+        cmd = [self.claude or find_claude(self.cfg.get("claude_bin", "claude")) or "claude", "-p",
                "--output-format", "stream-json", "--verbose",
                "--permission-mode", self.cfg.get("permission_mode", "acceptEdits"),
                "--add-dir", str(self.swarm_dir),
@@ -515,6 +521,8 @@ class Swarm:
             cmd += ["--max-budget-usd", str(self.cfg["max_budget_usd"])]
         if self.cfg.get("effort"):
             cmd += ["--effort", str(self.cfg["effort"])]
+        if self.cfg.get("disallowed_tools"):
+            cmd += ["--disallowedTools", *self.cfg["disallowed_tools"]]
         if self.cfg.get("allowed_tools"):
             cmd += ["--allowedTools", *self.cfg["allowed_tools"]]
         return cmd
@@ -528,7 +536,7 @@ class Swarm:
         try:
             proc = await asyncio.create_subprocess_exec(
                 *self.build_cmd(wk), cwd=str(wk.cwd), env=env,
-                stdin=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 limit=64 * 1024 * 1024, start_new_session=True)
         except Exception as e:  # noqa: BLE001
@@ -536,6 +544,13 @@ class Swarm:
             self.bus(wk.label, "orchestrator", f"non parte: {e}", "err")
             return
         wk.proc = proc
+        try:
+            proc.stdin.write(wk.task.encode("utf-8"))
+            await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # chiuso subito: lo dicono codice di uscita e stderr
+        finally:
+            proc.stdin.close()
         err_task = asyncio.ensure_future(proc.stderr.read())
         while True:
             line = await proc.stdout.readline()
@@ -560,10 +575,17 @@ class Swarm:
         else:
             await self.save_unfinished(wk)
 
+    def _own_commits(self, wk: Worker) -> bool:
+        """Il branch ha commit oltre la partenza? Succede quando l'agente unisce lui un branch
+        in conflitto (git merge fa già il commit) anche se poi non cambia altro."""
+        if not self.base:
+            return False
+        return git(wk.cwd, "rev-list", "--count", f"{self.base}..HEAD", check=False) not in ("", "0")
+
     async def commit(self, wk: Worker) -> None:
         def _do() -> bool:
             if not git(wk.cwd, "status", "--porcelain"):
-                return False
+                return self._own_commits(wk)
             git(wk.cwd, "add", "-A")
             git(wk.cwd, *git_id(wk.cwd), "commit", "-q", "--no-verify", "-m",
                 f"swarm({wk.name}): {short(wk.task, 60)}\n\n{wk.result_text[:2000]}")
@@ -583,8 +605,10 @@ class Swarm:
         """Agente in errore o fermato: il lavoro fatto (e pagato) finisce in un commit sul suo
         branch, così sopravvive alla rimozione del worktree. Non viene unito al progetto."""
         def _do() -> bool:
-            if not wk.cwd or not wk.cwd.exists() or not git(wk.cwd, "status", "--porcelain"):
+            if not wk.cwd or not wk.cwd.exists():
                 return False
+            if not git(wk.cwd, "status", "--porcelain"):
+                return self._own_commits(wk)
             git(wk.cwd, "add", "-A")
             git(wk.cwd, *git_id(wk.cwd), "commit", "-q", "--no-verify", "-m",
                 f"swarm({wk.name}) NON FINITO ({wk.status}): {short(wk.task, 50)}\n\n"

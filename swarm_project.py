@@ -4,10 +4,14 @@
    fondamenta (1 agente) → sviluppo in parallelo (N agenti) → integrazione.
 2. L'utente rivede e modifica il piano.
 3. La pipeline esegue le fasi una dopo l'altra: ogni fase è uno Swarm; alla
-   fine di ogni fase i branch degli agenti vengono uniti nel branch corrente
-   del progetto, così la fase dopo parte dal lavoro di quella prima.
+   fine di ogni fase i branch degli agenti vengono uniti nel branch di lavoro,
+   così la fase dopo parte dal lavoro di quella prima. In un progetto nuovo è il
+   branch del repository appena creato; in uno esistente è un branch nuovo
+   `swarm/<corsa>`, così il branch dell'utente resta com'era.
    Se un merge va in conflitto viene annullato e il branch viene passato al
-   primo agente della fase successiva, che lo unisce a mano.
+   primo agente della fase successiva, che lo unisce a mano. Se in una fase un
+   agente va in errore la pipeline si mette in pausa: l'utente sceglie se
+   continuare o fermarsi.
 """
 from __future__ import annotations
 
@@ -26,7 +30,7 @@ from swarm_advice import EFFORTS, MODELS, assign_efforts, phase_budget, planner_
 import swarm_publish as pub
 from swarm_core import CLAUDE_MISSING, ENV_STRIP, MAX_WORKERS, Swarm, describe_tool, find_claude, git, git_id, short
 
-STAGES = ("idle", "planning", "review", "running", "done", "stopped", "failed")
+STAGES = ("idle", "planning", "review", "running", "paused", "done", "stopped", "failed")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,30}$")
 
 # comandi sempre permessi agli agenti (solo lettura su git)
@@ -36,6 +40,8 @@ BUILD_TOOLS = ["Bash(npm:*)", "Bash(npx:*)", "Bash(node:*)", "Bash(python3:*)",
                "Bash(pytest:*)", "Bash(pip:*)", "Bash(cargo:*)", "Bash(go:*)", "Bash(make:*)"]
 # per chi deve unire a mano branch in conflitto
 MERGE_TOOLS = ["Bash(git merge:*)", "Bash(git add:*)", "Bash(git checkout:*)"]
+# sempre vietati: `git diff`/`git log` con --output=<file> scrivono dove vogliono
+DENY_TOOLS = ["Bash(git * --output*)"]
 
 PLANNER_PROMPT = """\
 Sei il pianificatore di "swarm": un orchestratore che fa lavorare più agenti
@@ -189,6 +195,7 @@ class Project:
         self.listeners: List[Callable[[str, dict], None]] = []
         self.history: Deque[dict] = collections.deque(maxlen=3000)
         self.messages = 0
+        self._loop: Optional[asyncio.AbstractEventLoop] = None  # il bus si tocca solo da qui
         self._reset_state()
 
     def _reset_state(self) -> None:
@@ -201,6 +208,11 @@ class Project:
         self.repo: Optional[Path] = None
         self.repo_state = ""
         self.base_commit = ""
+        self.base_branch = ""  # il branch aperto nel progetto prima della corsa
+        self.work_branch = ""  # dove finisce il lavoro: base_branch (progetto nuovo) o swarm/<corsa>
+        self._stamp = ""
+        self._carry: List[str] = []  # branch in conflitto da passare alla fase dopo
+        self._resume_at = 0  # in pausa: la fase da cui ripartire
         self.final: Optional[dict] = None
         self.error = ""
         self.cost_done = 0.0
@@ -229,6 +241,12 @@ class Project:
                 pass
 
     def bus(self, src: str, dst: str, msg: str, kind: str = "info") -> None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:  # da un thread (run_in_executor): storia e code SSE si toccano dal loop
+            if self._loop and not self._loop.is_closed():
+                self._loop.call_soon_threadsafe(self.bus, src, dst, msg, kind)
+                return
         if kind != "tool":
             self.messages += 1
         entry = {"ts": time.time(), "src": src, "dst": dst, "msg": msg, "kind": kind}
@@ -253,6 +271,7 @@ class Project:
             "stage": self.stage, "demo": self.demo, "settings": self.settings,
             "plan": self.plan, "phase_idx": self.phase_idx, "phases": self.phases,
             "repo": str(self.repo or ""), "repo_state": self.repo_state,
+            "base_branch": self.base_branch, "work_branch": self.work_branch,
             "final": self.final, "error": self.error, "cost": round(self.cost, 4),
             "cost_missing": self.cost_missing + (self.core.cost_missing if self.core and self.stage == "running" else []),
             "messages": self.messages, "started_at": self.started_at, "ended_at": self.ended_at,
@@ -275,7 +294,7 @@ class Project:
 
     # 1. pianificazione ------------------------------------------------------
     def begin_plan(self, settings: dict, feedback: str = "") -> None:
-        if self.stage in ("planning", "running"):
+        if self.stage in ("planning", "running", "paused"):
             raise ValueError("c'è già qualcosa in corso")
         idea = str(settings.get("idea") or "").strip()
         if len(idea) < 10:
@@ -301,6 +320,8 @@ class Project:
                          "difficulty": rec["difficulty"], "quality": rec["quality"]}
         self.advice = rec
         self.repo = repo
+        if self.demo:  # la demo fa finta di lavorare su un progetto esistente, sul branch main
+            self.repo_state, self.base_branch = "progetto esistente", "main"
         self._prev_plan = self.plan if feedback else None
         self._want_agents = {}
         self.plan = None
@@ -338,6 +359,7 @@ class Project:
         self._want_agents = {k.lower(): v for k, v in want.items()}
 
     async def _plan(self, feedback: str, gen: int) -> None:
+        self._loop = asyncio.get_running_loop()
         try:
             if not self.demo:
                 await asyncio.get_running_loop().run_in_executor(None, self._prepare_repo)
@@ -377,6 +399,8 @@ class Project:
             self.repo_state = "nuovo progetto"
         else:
             self.repo_state = "progetto esistente"
+        # vuoto se HEAD è staccato da un branch
+        self.base_branch = git(p, "symbolic-ref", "--short", "-q", "HEAD", check=False)
         if not git(p, "rev-parse", "--verify", "-q", "HEAD", check=False):
             readme = p / "README.md"
             if not readme.exists():
@@ -409,15 +433,22 @@ class Project:
                      "per capire struttura e tecnologie."),
             test_hint=" (lanciando build e test)" if s["allow_build"] else " (rileggendo il codice: non può lanciare comandi)",
         )
-        cmd = [claude, "-p", prompt, "--output-format", "stream-json", "--verbose",
+        cmd = [claude, "-p", "--output-format", "stream-json", "--verbose",  # il prompt va su stdin
                "--model", s["model"], "--permission-mode", "dontAsk",
                "--effort", self.advice["planner_effort"],
                "--allowedTools", "Read", "Glob", "Grep"]
         env = {k: v for k, v in os.environ.items() if k not in ENV_STRIP}
         proc = await asyncio.create_subprocess_exec(
-            *cmd, cwd=str(self.repo), env=env, stdin=asyncio.subprocess.DEVNULL,
+            *cmd, cwd=str(self.repo), env=env, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, limit=64 * 1024 * 1024)
         self._planner_proc = proc
+        try:
+            proc.stdin.write(prompt.encode("utf-8"))
+            await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            proc.stdin.close()
         err_task = asyncio.ensure_future(proc.stderr.read())
         result, is_error, got_result = "", False, False
         while True:
@@ -511,7 +542,20 @@ class Project:
         self.phases = [{"name": p["name"], "status": "pending", "merged": [], "conflicts": [],
                         "errors": [], "saved": [], "cost_missing": [], "cost": 0.0}
                        for p in self.plan["phases"]]
-        self._task = asyncio.ensure_future(self._run())
+        self._stamp = time.strftime("%Y%m%d-%H%M%S")
+        self._carry = []
+        self.work_branch = ""
+        self._task = asyncio.ensure_future(self._run(0))
+
+    def resume(self) -> None:
+        """In pausa dopo una fase con agenti in errore: si va avanti con la fase dopo."""
+        if self.stage != "paused":
+            raise ValueError("non c'è niente in pausa")
+        self.stage = "running"
+        self.stop_requested = False
+        self.ended_at = 0.0
+        self.bus("orchestrator", "all", "si continua con la fase dopo, come hai scelto", "info")
+        self._task = asyncio.ensure_future(self._run(self._resume_at))
 
     def start_from_config(self, cfg: dict) -> None:
         """Modalità `swarm.py config.json --web`: una sola fase, parte subito."""
@@ -527,23 +571,43 @@ class Project:
         self.stage = "review"
         self.start()
 
-    async def _run(self) -> None:
+    async def _run(self, start: int) -> None:
+        self._loop = asyncio.get_running_loop()
         try:
-            await self._run_phases()
+            await self._run_phases(start)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
             self._fail(f"errore nella pipeline: {short(str(e), 300)}")
 
-    async def _run_phases(self) -> None:
+    def _open_work_branch(self) -> None:
+        """Progetto esistente: il lavoro va in un branch nuovo, il branch dell'utente non si tocca.
+        Progetto nuovo (repository creato da swarm): si lavora sul suo unico branch."""
+        if self.repo_state == "progetto esistente":
+            self.work_branch = f"swarm/{self._stamp}"
+            if not self.demo:
+                git(self.repo, "checkout", "-q", "-b", self.work_branch)
+        else:
+            self.work_branch = self.base_branch or (
+                "" if self.demo else git(self.repo, "symbolic-ref", "--short", "-q", "HEAD", check=False))
+        if self.work_branch and self.work_branch != self.base_branch:
+            self.bus("orchestrator", "you", f"il lavoro va nel branch nuovo {self.work_branch}: "
+                     f"{self.base_branch or 'il tuo branch'} resta com'era", "info")
+
+    async def _run_phases(self, start: int) -> None:
         s = self.settings
         loop = asyncio.get_running_loop()
-        if not self.demo:
-            self.base_commit = git(self.repo, "rev-parse", "HEAD")
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        carry: List[str] = []  # branch in conflitto da passare alla fase dopo
+        if start == 0:
+            if not self.demo:
+                self.base_commit = git(self.repo, "rev-parse", "HEAD")
+            await loop.run_in_executor(None, self._open_work_branch)
+        stamp = self._stamp
         n = len(self.plan["phases"])
         for i, ph in enumerate(self.plan["phases"]):
+            if i < start:
+                continue
+            carry, carried = self._carry, list(self._carry)
+            self._carry = []
             self.phase_idx = i
             res = self.phases[i]
             res["status"] = "running"
@@ -556,7 +620,6 @@ class Project:
                     "con `git merge <branch>`, risolvi i conflitti tenendo il lavoro di entrambe le parti "
                     "e controlla che tutto torni. Poi fai il tuo compito.")
                 tools += MERGE_TOOLS
-                carry = []
             model = ph.get("model") or s.get("model") or ""
             budget = s.get("budget") or 0
             if budget and model in MODELS and s.get("model") in MODELS:
@@ -566,6 +629,7 @@ class Project:
                    "model": model or None,
                    "permission_mode": s.get("permission_mode") or "acceptEdits",
                    "max_budget_usd": budget or None, "allowed_tools": tools,
+                   "disallowed_tools": DENY_TOOLS,
                    "effort": ph.get("effort") or None,
                    "workers": workers}
             self.bus("orchestrator", "all", f"fase {i + 1}/{n} · {ph['name']} · {len(workers)} agent{'e' if len(workers) == 1 else 'i'}"
@@ -588,12 +652,12 @@ class Project:
                 self.stage = "stopped"
                 self.ended_at = time.time()
                 self.bus("orchestrator", "you", "progetto fermato", "warn")
-                await loop.run_in_executor(None, self._cleanup, core)
+                await self._cleanup_phase(core, carried)
                 return
             ok = [w for w in core.agents if w.status == "done"]
             if not ok:
                 res["status"] = "failed"
-                await loop.run_in_executor(None, self._cleanup, core)
+                await self._cleanup_phase(core, carried)
                 self._fail(f"fase {ph['name']}: nessun agente ha completato il lavoro, mi fermo qui")
                 return
             if not self.demo:
@@ -602,9 +666,9 @@ class Project:
                 merged = [w.branch or f"swarm/{core.run_id}/{w.name}" for w in ok]
                 conflicts = []
             res["merged"], res["conflicts"] = merged, conflicts
-            await loop.run_in_executor(None, self._cleanup, core)
+            await self._cleanup_phase(core, carried)
             if conflicts:
-                carry = conflicts
+                self._carry = conflicts
                 if i == n - 1:
                     self.bus("orchestrator", "you",
                              "conflitti nell'ultima fase: unisci a mano " + ", ".join(conflicts), "warn")
@@ -612,6 +676,16 @@ class Project:
             self.bus("orchestrator", "you",
                      f"fase {i + 1} completata · uniti {len(merged)} branch"
                      + (f" · {len(conflicts)} in conflitto" if conflicts else ""), "ok")
+            if res["errors"] and i < n - 1:
+                # la fase dopo conta sul lavoro di tutti: senza quello degli agenti in errore
+                # potrebbe costruire sul vuoto, quindi decide l'utente
+                self._resume_at = i + 1
+                self.stage = "paused"
+                self.ended_at = time.time()
+                self.bus("orchestrator", "you",
+                         f"in pausa: nella fase {ph['name']} non hanno finito " + ", ".join(res["errors"])
+                         + ". Puoi continuare con la fase dopo o fermarti qui.", "warn")
+                return
         self.final = await loop.run_in_executor(None, self._final_summary)
         self.stage = "done"
         await self.github_check()
@@ -634,15 +708,30 @@ class Project:
                 self.bus("orchestrator", w.label, f"merge in conflitto, lo passo alla fase dopo: {short(str(e), 120)}", "warn")
         return merged, conflicts
 
-    def _cleanup(self, core: Swarm) -> None:
-        """Rimuove i worktree. I branch restano, e il lavoro degli agenti non finiti è già
-        salvato sul loro branch (Swarm.save_unfinished), così nulla va perso."""
+    async def _cleanup_phase(self, core: Swarm, carried: List[str]) -> None:
+        core.close_log()
+        await asyncio.get_running_loop().run_in_executor(None, self._cleanup, core, carried)
+
+    def _cleanup(self, core: Swarm, carried: List[str] = ()) -> None:
+        """Rimuove worktree e cartella della fase, e i branch già uniti (il loro lavoro resta
+        nella storia). Restano solo i branch con lavoro non unito: non finiti (salvati da
+        Swarm.save_unfinished) e in conflitto, così nulla va perso."""
         if self.demo or not self.repo:
             return
         for w in core.agents:
             if w.cwd and w.cwd.exists():
                 git(self.repo, "worktree", "remove", "--force", str(w.cwd), check=False)
         git(self.repo, "worktree", "prune", check=False)
+        # `branch -d` rifiuta da solo un branch non ancora unito nel branch di lavoro
+        for b in [w.branch for w in core.agents if w.branch] + list(carried):
+            git(self.repo, "branch", "-q", "-d", b, check=False)
+        d = core.swarm_dir
+        if d and d.exists() and d.parent.name == f".{self.repo.name}-swarm":
+            shutil.rmtree(d, ignore_errors=True)
+            try:
+                d.parent.rmdir()  # solo se vuota: altre corse possono essere ancora lì
+            except OSError:
+                pass
 
     def _final_summary(self) -> dict:
         if self.demo:
@@ -731,7 +820,11 @@ class Project:
     # controllo --------------------------------------------------------------
     async def stop(self) -> None:
         self.stop_requested = True
-        if self.stage == "planning":
+        if self.stage == "paused":
+            self.stage = "stopped"
+            self.ended_at = time.time()
+            self.bus("orchestrator", "you", "progetto fermato dopo la pausa", "warn")
+        elif self.stage == "planning":
             self._plan_gen += 1
             if self._planner_proc and self._planner_proc.returncode is None:
                 self._planner_proc.terminate()
@@ -749,7 +842,7 @@ class Project:
             await self.core.stop_all()
 
     def reset(self) -> None:
-        if self.stage in ("planning", "running"):
+        if self.stage in ("planning", "running", "paused"):
             raise ValueError("ferma prima quello che è in corso")
         listeners = self.listeners
         self._reset_state()
@@ -759,7 +852,7 @@ class Project:
 
     def back_to_form(self) -> None:
         """Torna al modulo dell'idea, tenendo le impostazioni (per correggere e riprovare)."""
-        if self.stage in ("planning", "running"):
+        if self.stage in ("planning", "running", "paused"):
             raise ValueError("ferma prima quello che è in corso")
         self.stage = "idle"
         self.plan = None

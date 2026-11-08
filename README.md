@@ -70,17 +70,27 @@ Si apre il browser su http://localhost:8765 (o sulla prima porta libera dopo).
    Puoi cambiare ogni compito, oppure scrivere cosa non ti convince e premere
    "Rifai il piano".
 3. **Avvia**: le fasi partono una dopo l'altra. A fine fase swarm unisce i
-   branch degli agenti nel tuo progetto, così la fase dopo parte dal lavoro
-   fatto. Se due agenti vanno in conflitto, il merge viene annullato e il
-   branch viene passato all'agente della fase successiva, che lo unisce a mano.
+   branch degli agenti nel branch di lavoro, così la fase dopo parte dal lavoro
+   fatto. In un progetto nuovo è il branch del repository appena creato; in un
+   progetto esistente swarm apre un branch nuovo `swarm/<data-ora>` e il tuo
+   branch resta com'era (il piano te lo dice nella riga "Branch"). Se due
+   agenti vanno in conflitto, il merge viene annullato e il branch viene
+   passato all'agente della fase successiva, che lo unisce a mano.
+   Se in una fase un agente va in errore, swarm unisce il lavoro degli altri e
+   si mette **in pausa** prima della fase dopo: scegli tu se continuare (chi
+   viene dopo parte senza quel pezzo) o fermarti lì.
 4. **Mentre lavorano**:
    - clic su un agente: vedi compito, piano spuntato dal vivo, costo e ultimo
      messaggio; puoi **scrivergli** o fermarlo
    - in basso nel bus: **scrivi a tutti** gli agenti insieme
    - gli agenti leggono i messaggi dopo ogni passo del loro piano, non a metà
 5. **Fine**: vedi le fasi, i costi e i file cambiati. Il progetto è nella
-   cartella scelta; ogni agente ha lasciato il suo branch `swarm/…`, quindi
-   con git puoi sempre tornare indietro.
+   cartella scelta; ogni unione è un commit nella storia, quindi con git puoi
+   sempre tornare indietro. In un progetto esistente la pagina finale ti dice
+   come portare il branch `swarm/…` nel tuo.
+   swarm toglie da solo i worktree, la cartella `.<progetto>-swarm/` e i branch
+   degli agenti già uniti; restano solo i branch con lavoro non unito (non
+   finiti o in conflitto).
 
 `Ctrl-C` nel terminale ferma tutto ed esce.
 
@@ -98,6 +108,16 @@ Stesso flusso con pianificatore e agenti finti: non crea niente su disco.
   `swarm.example.json`) in una sola fase, con la dashboard nel browser.
 - `swarm.py config.json`: come sopra, ma con la dashboard nel terminale.
 - `swarm.py --demo`: demo nel terminale (`1`–`8` dettagli, `x` ferma, `q` esci).
+
+## Test
+
+```bash
+.venv/bin/python -m unittest discover tests
+```
+
+Controllano piano, consigli (anche che la pagina calcoli modello e spesa per
+fase come Python) e una pipeline intera su un repository temporaneo, con un
+finto `claude` (`tests/fake_claude.py`): non spendono niente.
 
 ## File
 
@@ -119,7 +139,8 @@ Stesso flusso con pianificatore e agenti finti: non crea niente su disco.
 - Gli agenti girano con `acceptEdits`: modificano file nel loro worktree e
   nella cartella dello sciame (`.<progetto>-swarm/`, dove si scambiano i
   messaggi e dove stanno anche i worktree degli altri). Senza "Lanciare build
-  e test" possono usare solo comandi git di lettura.
+  e test" possono usare solo comandi git di lettura (`git status`, `git diff`,
+  `git log`, senza `--output`, che scriverebbe un file) e `ls`.
 - **Con "Lanciare build e test" acceso gli agenti hanno di fatto una shell
   completa**: `python3`, `node`, `npx`, `make` e simili eseguono qualsiasi
   programma con i tuoi permessi, quindi possono leggere e cambiare file fuori

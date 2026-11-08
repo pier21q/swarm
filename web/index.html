@@ -677,11 +677,13 @@ body[data-studio] .done-wrap { width: min(1060px, 100%); margin: 0 auto; padding
   font-weight: 850; font-variation-settings: "wdth" 125; overflow-wrap: anywhere;
 }
 .fin-head.bad h1 { color: var(--red); }
+.fin-head.wait h1 { color: var(--amber); }
 .fin-sum { margin: 0; font-size: 19px; max-width: 56ch; }
 .fin-goal { margin: 8px 0 0; color: var(--dim); max-width: 64ch; }
 .fin-head + .alert, .fin-head + .note { margin-top: 24px; }
 .fin-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, .75fr); gap: 20px; margin-top: 44px; align-items: start; }
 .out-card { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 24px; }
+.pause-card { margin: 28px 0 18px; border-color: color-mix(in srgb, var(--amber) 55%, var(--line)); }
 .out-card h2 { margin: 0 0 6px; font-size: 24px; line-height: 1.1; font-weight: 800; font-variation-settings: "wdth" 112; }
 .out-card .row { display: flex; flex-wrap: wrap; gap: 8px; }
 .out-path { font-family: var(--mono); font-size: 13px; color: var(--dim); margin-bottom: 18px; overflow-wrap: anywhere; }
@@ -1045,12 +1047,12 @@ function render() {
   // header
   const goal = (P.plan && P.plan.goal) || (P.settings && P.settings.idea) || "studio";
   $("#goal").textContent = (P.demo ? "demo · " : "") + goal;
-  $("#stats").hidden = !["running", "done", "stopped", "failed"].includes(P.stage) || !P.phases.length;
-  $("#btnStop").hidden = !["planning", "running"].includes(P.stage);
+  $("#stats").hidden = !["running", "paused", "done", "stopped", "failed"].includes(P.stage) || !P.phases.length;
+  $("#btnStop").hidden = !["planning", "running", "paused"].includes(P.stage);
   $("#btnNew").hidden = !["done", "stopped", "failed"].includes(P.stage) || !P.phases.length;
   if (live.dataset.s !== "off") {
-    const s = { running: "live", planning: "live", done: "done", failed: "bad", stopped: "bad" }[P.stage];
-    setLive(s || "idle", { idle: "pronto", review: "da rivedere" }[P.stage]);
+    const s = { running: "live", planning: "live", done: "done", failed: "bad", stopped: "bad", paused: "bad" }[P.stage];
+    setLive(s || "idle", { idle: "pronto", review: "da rivedere", paused: "in pausa" }[P.stage]);
   }
   const running = C ? C.agents.filter((a) => a.status === "running" || a.status === "starting").length : 0;
   $("#sRunning").textContent = P.stage === "running" ? running : 0;
@@ -1070,7 +1072,7 @@ function render() {
 
 function renderSteps() {
   const bar = $("#stepsBar");
-  const show = P.plan && ["running", "done", "stopped", "failed"].includes(P.stage) && P.phases.length;
+  const show = P.plan && ["running", "paused", "done", "stopped", "failed"].includes(P.stage) && P.phases.length;
   bar.hidden = !show;
   if (!show) return;
   const key = JSON.stringify(P.phases.map((p) => p.status)) + P.plan.phases.length;
@@ -1899,6 +1901,9 @@ function updateSummary() {
   box.replaceChildren();
   const add = (k, v) => { const d = el("div"); d.append(el("dt", null, k), el("dd", null, v)); box.append(d); };
   add("Cartella", prettyPath(String(P.repo || s.path)) + (P.repo_state ? `, ${P.repo_state}` : ""));
+  if (P.repo_state === "progetto esistente")
+    add("Branch", `uno nuovo, swarm/…: ${P.base_branch || "il branch attuale"} resta com'è`);
+  else if (P.base_branch) add("Branch", P.base_branch);
   const eds = [...document.querySelectorAll(".phase-ed")];
   const used = eds.map((ph) => ph.querySelector(".ph-model").value || s.model);
   const max = eds.reduce((t, ph) => t + ph.querySelectorAll(".w-ed").length
@@ -2138,6 +2143,7 @@ function renderDone() {
   box.dataset.key = key;
   box.replaceChildren();
   const ok = P.stage === "done";
+  const paused = P.stage === "paused";
   const path = (P.final && P.final.path) || P.repo || "";
   const name = path.split("/").filter(Boolean).pop() || "Il progetto";
   const conflicts = P.phases.flatMap((p) => p.conflicts);
@@ -2145,10 +2151,11 @@ function renderDone() {
   const files = (P.final && P.final.files) ? P.final.files.length : 0;
   const dur = P.started_at ? humanDur((P.ended_at || Date.now() / 1000) - P.started_at) : "";
 
-  const head = el("header", "fin-head" + (ok ? "" : " bad"));
-  head.append(el("h1", null, ok ? `${name} è pronto` : P.stage === "stopped" ? "Progetto fermato" : "Qualcosa è andato storto"));
-  let sum = `${agents} agenti in ${P.phases.length} fasi`;
-  sum += files ? ` hanno cambiato ${files} file` : " hanno lavorato";
+  const head = el("header", "fin-head" + (ok ? "" : paused ? " wait" : " bad"));
+  head.append(el("h1", null, ok ? `${name} è pronto` : paused ? "In pausa" : P.stage === "stopped" ? "Progetto fermato" : "Qualcosa è andato storto"));
+  const doneN = P.phases.filter((p) => p.status !== "pending").length;
+  let sum = paused ? `${doneN} fasi su ${P.phases.length} fatte` : `${agents} agenti in ${P.phases.length} fasi`;
+  sum += paused ? "" : files ? ` hanno cambiato ${files} file` : " hanno lavorato";
   if (dur) sum += ` in ${dur}`;
   const miss = P.cost_missing || [];
   sum += miss.length ? `, per almeno ${fmtCost(P.cost)}.` : `, per circa ${fmtCost(P.cost)}.`;
@@ -2157,13 +2164,32 @@ function renderDone() {
   if (P.plan && P.plan.goal) head.append(el("p", "fin-goal", P.plan.goal));
   box.append(head);
   if (P.error) box.append(el("div", "alert", P.error));
+  if (paused) {
+    const last = [...P.phases].reverse().find((p) => p.status !== "pending");
+    const next = P.phases[P.phases.indexOf(last) + 1];
+    const card = el("div", "out-card pause-card");
+    card.append(el("h2", null, `${(last.errors || []).join(", ")} non ${last.errors.length === 1 ? "ha" : "hanno"} finito`));
+    card.append(el("p", "out-q", `Nella fase ${last.name} ${last.errors.length === 1 ? "un agente è andato" : "alcuni agenti sono andati"} in errore. `
+      + `Il lavoro degli altri è già unito; quello non finito è salvato sul suo branch. La fase ${next ? next.name : "dopo"} `
+      + "partirebbe senza quel pezzo: puoi continuare lo stesso (chi viene dopo può accorgersene e rimediare) o fermarti qui."));
+    const row = el("div", "row");
+    row.append(btn(`Continua con ${next ? next.name : "la fase dopo"}`, "primary", () => act("/api/continue")));
+    row.append(btn("Fermati qui", null, () => act("/api/stop")));
+    card.append(row);
+    box.append(card);
+  }
   if (miss.length) box.append(el("div", "note", `${missingNote(miss)}. Quali: ${miss.join(", ")}.`));
   const saved = P.phases.flatMap((p) => p.saved || []);
   if (saved.length) box.append(el("div", "note", "Lavoro non finito, salvato ma non unito al progetto "
     + "(agenti in errore o fermati). Lo trovi su questi branch, per esempio con git log o git merge: " + saved.join(", ")));
   if (ok && conflicts.length) box.append(el("div", "note", "Questi branch non si sono uniti da soli e vanno uniti a mano: " + conflicts.join(", ")));
+  if (!paused && P.work_branch && P.base_branch && P.work_branch !== P.base_branch)
+    box.append(el("div", "note", `Il lavoro è nel branch ${P.work_branch}, che resta aperto nella cartella. `
+      + `Il tuo ${P.base_branch} è com'era: per portarci il lavoro, git checkout ${P.base_branch} && git merge ${P.work_branch}`));
 
-  if (path && ok) {
+  if (paused) {
+    // niente scheda progetto e niente "riparti": prima si decide se continuare
+  } else if (path && ok) {
     const grid = el("div", "fin-grid");
     grid.append(projectCard(path));
     if (P.github && !ghUi.hidden) grid.append(githubCard());
@@ -2205,7 +2231,8 @@ function renderDone() {
     det.append(ul);
     box.append(det);
   }
-  if (path && !P.demo) box.append(el("p", "hint fin-hint", "Ogni agente ha lasciato il suo branch swarm/… nel progetto: se qualcosa non ti convince, con git puoi tornare indietro."));
+  if (path && !P.demo && !paused) box.append(el("p", "hint fin-hint", "Ogni unione di un agente è un commit nella storia del progetto: se qualcosa non ti convince, con git puoi tornare indietro. I branch swarm/… già uniti sono stati tolti; restano solo quelli con lavoro non unito."));
+  if (paused) return;
   const acts = el("div", "done-actions");
   acts.append(btn("Nuovo progetto", "go", newProject));
   acts.append(btn("Riparti da questa idea", null, () => act("/api/form")));
@@ -2304,7 +2331,7 @@ function githubCard() {
     return card;
   }
   if (!ghUi.open) {
-    card.append(el("div", "hint", `Crea un repository nel tuo account ${g.user ? "@" + g.user : ""} e ci carica il progetto (solo il branch principale, non i branch swarm/…).`));
+    card.append(el("div", "hint", `Crea un repository nel tuo account ${g.user ? "@" + g.user : ""} e ci carica il progetto (solo il branch aperto ora nella cartella).`));
     const r = el("div", "row");
     r.append(btn("Sì, salvalo", "primary", () => { ghUi.open = true; renderDone(); }));
     r.append(btn("No, grazie", "ghost", () => { ghUi.hidden = true; renderDone(); }));
@@ -2356,6 +2383,7 @@ async function newProject() {
 $("#btnNew").addEventListener("click", newProject);
 $("#btnStop").addEventListener("click", () => {
   if (P.stage === "running" && !confirm("Fermare tutti gli agenti? La fase in corso non verrà unita.")) return;
+  if (P.stage === "paused" && !confirm("Fermarti qui? Le fasi rimaste non partiranno.")) return;
   act("/api/stop");
 });
 
