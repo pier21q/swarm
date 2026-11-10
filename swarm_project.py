@@ -580,6 +580,47 @@ class Project:
         except Exception as e:  # noqa: BLE001
             self._fail(f"errore nella pipeline: {short(str(e), 300)}")
 
+    def _sweep_old(self) -> None:
+        """Toglie quello che hanno lasciato le corse precedenti (anche quelle di prima che
+        swarm pulisse da solo): cartelle in `.<progetto>-swarm/` senza worktree registrati e
+        branch degli agenti già uniti. I branch con lavoro non unito restano (`branch -d`
+        li rifiuta), come quelli di lavoro `swarm/<corsa>` e le cartelle di corse ancora vive."""
+        repo = self.repo
+        git(repo, "worktree", "prune", check=False)
+        live = [Path(ln[len("worktree "):]).resolve()
+                for ln in git(repo, "worktree", "list", "--porcelain", check=False).splitlines()
+                if ln.startswith("worktree ")]
+        dirs = 0
+        base = repo.parent / f".{repo.name}-swarm"
+        if base.is_dir():
+            for d in base.iterdir():
+                if not d.is_dir():
+                    continue
+                r = d.resolve()
+                if any(w == r or r in w.parents for w in live):
+                    continue
+                shutil.rmtree(d, ignore_errors=True)
+                dirs += 1
+            try:
+                base.rmdir()  # solo se vuota
+            except OSError:
+                pass
+        branches = 0
+        refs = git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/swarm/", check=False).split()
+        for b in refs:
+            if not re.fullmatch(r"swarm/\d{8}-\d{6}-f\d+/[^/]+", b):  # solo branch degli agenti
+                continue
+            try:
+                git(repo, "branch", "-q", "-d", b)
+                branches += 1
+            except RuntimeError:
+                pass  # non unito, o aperto in un worktree: resta
+        if dirs or branches:
+            self.bus("orchestrator", "you", "tolti da corse precedenti: "
+                     + ", ".join(x for x in (
+                         (f"{branches} branch già unit" + ("o" if branches == 1 else "i")) if branches else "",
+                         (f"{dirs} cartell" + ("a" if dirs == 1 else "e")) if dirs else "") if x), "info")
+
     def _open_work_branch(self) -> None:
         """Progetto esistente: il lavoro va in un branch nuovo, il branch dell'utente non si tocca.
         Progetto nuovo (repository creato da swarm): si lavora sul suo unico branch."""
@@ -600,6 +641,7 @@ class Project:
         if start == 0:
             if not self.demo:
                 self.base_commit = git(self.repo, "rev-parse", "HEAD")
+                await loop.run_in_executor(None, self._sweep_old)
             await loop.run_in_executor(None, self._open_work_branch)
         stamp = self._stamp
         n = len(self.plan["phases"])

@@ -2,10 +2,29 @@
 
 Niente di aperto dalla revisione del 7 novembre 2026.
 
-Da tenere d'occhio: le cartelle `.<progetto>-swarm/` e i branch `swarm/*` lasciati
-dalle corse fatte prima dell'8 novembre non vengono tolti da soli.
+Resta da provare con agenti veri (costa, quindi solo quando lo decidi tu): che
+`claude -p` legga il compito da stdin e che `--disallowedTools "Bash(git * --output*)"`
+blocchi davvero `git diff --output=…`.
 
 ## Fatto
+
+### Pulizia delle corse vecchie (11 novembre 2026)
+
+Prima dell'8 novembre swarm non toglieva niente: cartelle `.<progetto>-swarm/` e
+branch degli agenti restavano a ogni corsa.
+
+- `swarm_project.py`: `_sweep_old`, all'avvio di ogni corsa vera (prima di aprire
+  il branch di lavoro). Toglie le cartelle in `.<progetto>-swarm/` che non hanno
+  worktree registrati in git (e la cartella stessa, se resta vuota), e con
+  `git branch -d` i branch degli agenti (`swarm/<data-ora>-f<n>/<nome>`) già
+  uniti. Restano i branch con lavoro non unito, quelli aperti in un worktree
+  (una corsa ancora viva) e i branch di lavoro `swarm/<data-ora>`. Sul bus:
+  "tolti da corse precedenti: …".
+- `tests/test_pipeline.py`: nuovo test su un repository temporaneo con un branch
+  unito, uno non unito, un branch di lavoro, una cartella vecchia e una corsa
+  "viva" con il suo worktree. 31 test, tutti verdi.
+- Non provato in demo: la demo non scrive su disco, quindi lì non c'è niente da
+  togliere e il comportamento non cambia. Non provato su un progetto vero.
 
 ### Il resto della revisione (8 novembre 2026)
 

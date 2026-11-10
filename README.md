@@ -90,7 +90,8 @@ Si apre il browser su http://localhost:8765 (o sulla prima porta libera dopo).
    come portare il branch `swarm/…` nel tuo.
    swarm toglie da solo i worktree, la cartella `.<progetto>-swarm/` e i branch
    degli agenti già uniti; restano solo i branch con lavoro non unito (non
-   finiti o in conflitto).
+   finiti o in conflitto). All'avvio di ogni corsa toglie anche quello che è
+   rimasto dalle corse precedenti, con le stesse regole.
 
 `Ctrl-C` nel terminale ferma tutto ed esce.
 

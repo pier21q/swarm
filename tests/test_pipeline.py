@@ -122,6 +122,36 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(files, {"a.txt", "b.txt", "shared.txt"})
         self.assertEqual(threads, {threading.get_ident()})
 
+    def test_pulizia_corse_vecchie(self):
+        ident = ["-c", "user.name=t", "-c", "user.email=t@t"]
+        old = "swarm/20261101-100000-f1"
+        git(self.repo, "branch", f"{old}/unito")  # punta al commit attuale: già unito
+        git(self.repo, "branch", "swarm/20261101-100000")  # branch di lavoro: resta
+        git(self.repo, "switch", "-q", "-c", f"{old}/non-unito")
+        (self.repo / "x.txt").write_text("x\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, *ident, "commit", "-q", "-m", "lavoro non unito")
+        git(self.repo, "switch", "-q", "main")
+        swarm_dir = self.root / ".proj-swarm"
+        (swarm_dir / "20261101-100000-f1").mkdir(parents=True)
+        (swarm_dir / "20261101-100000-f1" / "bus.log").write_text("vecchio\n")
+        vivo = swarm_dir / "20261110-090000-f1"
+        git(self.repo, "worktree", "add", "-q", "-b", "swarm/20261110-090000-f1/vivo", str(vivo / "wt" / "vivo"))
+
+        p = sp.Project(demo=False)
+        msgs = []
+        p.listeners.append(lambda kind, payload: msgs.append(payload.get("msg", "")))
+        p.repo = self.repo
+        p._sweep_old()
+        left = branches(self.repo)
+        self.assertNotIn(f"{old}/unito", left)
+        self.assertIn(f"{old}/non-unito", left)
+        self.assertIn("swarm/20261101-100000", left)
+        self.assertIn("swarm/20261110-090000-f1/vivo", left)  # aperto in un worktree
+        self.assertFalse((swarm_dir / "20261101-100000-f1").exists())
+        self.assertTrue((vivo / "wt" / "vivo").exists())
+        self.assertIn("tolti da corse precedenti: 1 branch già unito, 1 cartella", msgs)
+
     def test_stop_in_pausa(self):
         async def go():
             p = sp.Project(demo=True)
