@@ -132,11 +132,15 @@ finto `claude` (`tests/fake_claude.py`): non spendono niente.
 
 ## Sicurezza e costi
 
-- La dashboard ascolta solo su `localhost` e risponde solo se la chiami come
-  `localhost` o `127.0.0.1`: un sito che punta il suo nome sul tuo computer
-  (DNS rebinding) riceve un rifiuto. I comandi devono arrivare dalla pagina
-  stessa, con un codice che il server mette nella pagina a ogni avvio. La
-  cartella del progetto deve stare nella tua home.
+- La dashboard ascolta solo sul tuo computer, su `127.0.0.1` e `::1` (i due
+  indirizzi di `localhost`): così `localhost` arriva sempre a swarm e non a un
+  altro programma. Se la porta è occupata su uno dei due, swarm usa la
+  successiva. Risponde solo se la chiami come `localhost`, `127.0.0.1` o
+  `[::1]`: un sito che punta il suo nome sul tuo computer (DNS rebinding) riceve
+  un rifiuto. I comandi devono arrivare dalla pagina stessa, con un codice che
+  il server mette nella pagina a ogni avvio. Nessun altro sito può mostrare la
+  dashboard dentro una sua pagina (iframe) per farti cliccare qualcosa senza
+  accorgertene. La cartella del progetto deve stare nella tua home.
 - Gli agenti girano con `acceptEdits`: modificano file nel loro worktree e
   nella cartella dello sciame (`.<progetto>-swarm/`, dove si scambiano i
   messaggi e dove stanno anche i worktree degli altri). Senza "Lanciare build
@@ -150,9 +154,13 @@ finto `claude` (`tests/fake_claude.py`): non spendono niente.
 - Se un agente va in errore, esaurisce la spesa o lo fermi, quello che ha fatto
   viene salvato in un commit sul suo branch `swarm/…` (segnato "NON FINITO") e
   non viene unito al progetto. Lo trovi nella pagina finale.
-- La spesa massima vale per ogni agente: con 5 agenti a $2 il tetto è $10
-  (più pochi centesimi per il pianificatore e meno di un centesimo per gli
-  esempi della matrice). Una fase con un modello più economico di quello del
+- La spesa massima vale per ogni agente: con 5 agenti a $2 il tetto è $10,
+  più il pianificatore e meno di un centesimo per gli esempi della matrice.
+- Anche il pianificatore ha un tetto: metà di quello di un agente con lo stesso
+  modello ed effort, mai sotto $0,50 (Sonnet $1–1,50, Opus $2,50–4). Di solito spende
+  molto meno. Lo vedi nel riquadro "La squadra" (riga "Piano") e mentre prepara
+  le fasi. Se lo raggiunge si ferma e la pagina lo dice: non c'è nessun piano a
+  metà. Una fase con un modello più economico di quello del
   progetto ha un tetto più basso, mai più alto. Con un abbonamento Claude il
   costo mostrato è una stima e i limiti d'uso si consumano più in fretta.
 - Il costo di un agente lo dice Claude Code solo quando l'agente finisce. Se

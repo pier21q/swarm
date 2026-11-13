@@ -1,4 +1,10 @@
-"""Piano: JSON del pianificatore, controllo del piano, cartella del progetto."""
+"""Piano: JSON del pianificatore, controllo del piano, cartella del progetto, tetto di spesa
+del pianificatore."""
+import asyncio
+import json
+import os
+import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -116,6 +122,47 @@ class ResolveProjectPath(unittest.TestCase):
     def test_slug(self):
         self.assertEqual(sp.project_slug("Crea un gioco della vita"), "gioco-vita")
         self.assertEqual(sp.project_slug("!!!"), "progetto")
+
+
+FAKE_PLANNER = """#!{py}
+import json, os, sys
+sys.stdin.read()
+open(os.environ["FAKE_PLANNER_ARGV"], "w").write(json.dumps(sys.argv[1:]))
+over = os.environ.get("FAKE_PLANNER_OVER") == "1"
+print(json.dumps({{"type": "result", "subtype": "error_max_budget_usd" if over else "success",
+                  "is_error": over, "total_cost_usd": 1.5, "result": "" if over else "{{}}"}}))
+"""
+
+
+class PlannerBudget(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        fake = self.root / "claude"
+        fake.write_text(FAKE_PLANNER.format(py=sys.executable))
+        fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+        self.argv = self.root / "argv.json"
+        env = mock.patch.dict(os.environ, {"SWARM_CLAUDE": str(fake), "FAKE_PLANNER_ARGV": str(self.argv)})
+        env.start()
+        self.addCleanup(env.stop)
+        self.p = sp.Project(demo=False)
+        self.p.advice = sp.recommend(3, 3)
+        self.p.settings = {"idea": "un gestionale per la palestra", "path": str(self.root), "model": "opus",
+                           "budget": 5, "max_workers": 5, "allow_build": False, "difficulty": 3,
+                           "quality": 3, "planner_budget": 4.0}
+        self.p.repo, self.p.repo_state = self.root, "nuovo progetto"
+
+    def test_tetto_passato_a_claude(self):
+        asyncio.run(self.p._run_planner(""))
+        argv = json.loads(self.argv.read_text())
+        self.assertEqual(argv[argv.index("--max-budget-usd") + 1], "4.0")
+
+    def test_tetto_raggiunto(self):
+        with mock.patch.dict(os.environ, {"FAKE_PLANNER_OVER": "1"}):
+            with self.assertRaisesRegex(RuntimeError, r"tetto di spesa \(\$4\.00\)"):
+                asyncio.run(self.p._run_planner(""))
+        self.assertEqual(self.p.planner_cost, 1.5)
 
 
 if __name__ == "__main__":

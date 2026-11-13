@@ -88,6 +88,13 @@ def phase_budget(budget: float, model: str, project_model: str) -> float:
     return min(budget, max(0.5, int(budget * a / b * 2 + 0.5) / 2))  # come Math.round nella pagina
 
 
+def planner_budget(model: str, effort: str) -> float:
+    """Spesa massima del pianificatore: metà di quella di un agente con lo stesso modello ed
+    effort (legge il codice e scrive un JSON, non costruisce niente), mai sotto $0,50."""
+    b = MODEL_BUDGET.get(model, MODEL_BUDGET["sonnet"]) * EFFORT_COST.get(effort, 1.0) / 2
+    return max(0.5, int(b * 2 + 0.5) / 2)
+
+
 def recommend(difficulty: int, quality: int) -> dict:
     d, q = _clamp(difficulty), _clamp(quality)
     dev = DEV_AGENTS[d][q]
@@ -135,10 +142,12 @@ def recommend(difficulty: int, quality: int) -> dict:
     if q >= 2 and d >= 2:
         notes.append("Conviene attivare i comandi di build e test, così gli agenti verificano il lavoro.")
 
+    planner_effort = "medium" if d == 1 else "high"
     return {"difficulty": d, "quality": q, "model": model, "budget": budget,
             "max_workers": max(dev, review, 1), "phases": phases, "total_agents": total,
             "max_cost": round(sum(p["agents"] * p["budget"] for p in phases), 2), "allow_build": q >= 2 and d >= 2,
-            "planner_effort": "medium" if d == 1 else "high", "notes": notes}
+            "planner_effort": planner_effort, "planner_budget": planner_budget(model, planner_effort),
+            "notes": notes}
 
 
 def phase_role(name: str, i: int, n: int) -> str:

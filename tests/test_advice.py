@@ -27,6 +27,16 @@ class Recommend(unittest.TestCase):
                         if r["model"] == "opus" and p["role"] not in sa.STRONG_ROLES:
                             self.assertEqual(p["model"], "sonnet")
 
+    def test_planner_budget(self):
+        self.assertEqual(sa.planner_budget("haiku", "medium"), 0.5)
+        self.assertEqual(sa.planner_budget("sonnet", "medium"), 1.0)
+        self.assertEqual(sa.planner_budget("sonnet", "high"), 1.5)
+        self.assertEqual(sa.planner_budget("opus", "high"), 4.0)
+        for d in (1, 2, 3):
+            for q in (1, 2, 3):
+                r = sa.recommend(d, q)
+                self.assertEqual(r["planner_budget"], sa.planner_budget(r["model"], r["planner_effort"]))
+
     def test_valori_fuori_scala(self):
         self.assertEqual(sa.recommend(9, -1)["difficulty"], 3)
         self.assertEqual(sa.recommend("x", None)["quality"], 2)

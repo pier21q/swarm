@@ -4,9 +4,47 @@ Niente di aperto dalla revisione del 7 novembre 2026.
 
 Resta da provare con agenti veri (costa, quindi solo quando lo decidi tu): che
 `claude -p` legga il compito da stdin e che `--disallowedTools "Bash(git * --output*)"`
-blocchi davvero `git diff --output=…`.
+blocchi davvero `git diff --output=…`. Lo stesso per il tetto del pianificatore
+(`--max-budget-usd`): il nome esatto dell'evento quando lo raggiunge non l'ho visto
+con un pianificatore vero.
+
+Dalla revisione esterna dell'8 novembre (30 punti): la lista completa è andata
+persa, restano da ricontrollare gli altri punti gravi (segreti nella history su
+GitHub, agenti che committano `.env`/`node_modules`, "Ferma" tra due fasi,
+branch in conflitto perso, commit fallito, testo con graffe dopo il JSON del piano).
 
 ## Fatto
+
+### Iframe, localhost su IPv6 e tetto del pianificatore (13 novembre 2026)
+
+Tre punti della revisione esterna dell'8 novembre, ancora aperti.
+
+- **Dashboard dentro un iframe** (`swarm_web.py`): ogni risposta, anche gli
+  eventi SSE e i rifiuti, ha `X-Frame-Options: DENY` e
+  `Content-Security-Policy: frame-ancestors 'none'` (più `nosniff` e
+  `no-referrer`). Un altro sito non può più incorniciare la pagina e far
+  cliccare "Avvia" o "Carica su GitHub" di nascosto.
+- **`localhost` su `::1`** (`swarm_web.py`): il server ascoltava solo su
+  127.0.0.1, ma `localhost` può risolvere a `::1`, e lì poteva rispondere un
+  altro programma. Ora `_listen` apre la stessa porta su 127.0.0.1 e `::1`; se
+  uno dei due è occupato passa alla porta dopo. Se il sistema non ha IPv6 resta
+  solo 127.0.0.1.
+- **Tetto di spesa del pianificatore** (`swarm_advice.py`, `swarm_project.py`,
+  `web/index.html`): `planner_budget(model, effort)` = metà della spesa di un
+  agente con lo stesso modello ed effort, mai sotto $0,50 (Haiku $0,50, Sonnet
+  $1–1,50, Opus $2,50–4). Passato a `claude -p` con `--max-budget-usd`. Se il
+  pianificatore lo raggiunge, la pagina lo dice con il tetto in dollari invece
+  di un errore generico. Si vede nel riquadro "La squadra" (riga "Piano") e
+  nella schermata "Il pianificatore sta preparando le fasi…".
+- `README.md`: sicurezza e costi aggiornati.
+- Test: nuovo `tests/test_web.py` (intestazioni su `/`, API, 404, SSE e rifiuto
+  per Host sbagliato; pagina servita su 127.0.0.1 e `::1`; porta saltata se
+  `::1` è occupato) e test del tetto in `test_plan.py` (passato a `claude`,
+  messaggio quando è raggiunto) e `test_advice.py`. 37 test, tutti verdi.
+- Provato in demo nel browser: riquadro "La squadra" a desktop chiaro, schermata
+  del pianificatore a 375px scuro, nessun errore in console; con curl le
+  intestazioni ci sono e la porta ascolta su entrambi gli indirizzi. Non
+  provato con un pianificatore vero (costa).
 
 ### Pulizia delle corse vecchie (11 novembre 2026)
 

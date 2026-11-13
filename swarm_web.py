@@ -1,6 +1,7 @@
 """swarm_web — dashboard web locale per swarm.
 
-Server HTTP minimale (solo libreria standard), solo su 127.0.0.1:
+Server HTTP minimale (solo libreria standard), solo in locale: 127.0.0.1 e ::1 sulla stessa
+porta (`localhost` può risolvere all'uno o all'altro):
   GET  /                  la pagina (web/index.html)
   GET  /events            Server-Sent Events: hello, state, bus, pulse
   GET  /api/state         stato attuale in JSON
@@ -21,10 +22,12 @@ Server HTTP minimale (solo libreria standard), solo su 127.0.0.1:
   POST /api/reset         nuovo progetto da zero
 Ogni richiesta deve avere Host localhost/127.0.0.1 sulla porta giusta (contro il DNS rebinding);
 le POST vogliono anche la stessa origine e il token che il server mette nella pagina.
+Nessuna risposta si può mostrare dentro un iframe di un altro sito (clickjacking).
 """
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import secrets
 import signal
@@ -211,12 +214,17 @@ class WebDashboard:
         host = headers.get("host", "")
         return bool(host) and origin == f"http://{host}"
 
-    @staticmethod
-    async def _send(writer, status: int, body: bytes, ctype: str) -> None:
+    # la pagina non si può incorniciare: un sito aperto nel browser potrebbe metterla in un
+    # iframe invisibile e far cliccare "Avvia" o "Carica su GitHub" senza che te ne accorga
+    SAFE_HEADERS = ("X-Frame-Options: DENY\r\nContent-Security-Policy: frame-ancestors 'none'\r\n"
+                    "X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n")
+
+    @classmethod
+    async def _send(cls, writer, status: int, body: bytes, ctype: str) -> None:
         reason = {200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found"}.get(status, "OK")
         writer.write(
             f"HTTP/1.1 {status} {reason}\r\nContent-Type: {ctype}\r\n"
-            f"Content-Length: {len(body)}\r\nCache-Control: no-store\r\n"
+            f"Content-Length: {len(body)}\r\nCache-Control: no-store\r\n{cls.SAFE_HEADERS}"
             f"Connection: close\r\n\r\n".encode() + body)
         await writer.drain()
 
@@ -225,7 +233,8 @@ class WebDashboard:
 
     async def _sse(self, writer: asyncio.StreamWriter) -> None:
         writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
-                     b"Cache-Control: no-store\r\nConnection: keep-alive\r\n\r\n")
+                     b"Cache-Control: no-store\r\n" + self.SAFE_HEADERS.encode()
+                     + b"Connection: keep-alive\r\n\r\n")
         q: asyncio.Queue = asyncio.Queue(maxsize=2000)
         self.clients.add(q)
         self.writers.add(writer)
@@ -260,12 +269,24 @@ class WebDashboard:
                 writer.close()
 
 
+async def _listen(handle, port: int):
+    """Ascolta su 127.0.0.1 e ::1 sulla stessa porta: il browser apre `localhost`, che può
+    risolvere a ::1, e se lì rispondesse un altro programma la pagina sarebbe sua. Una porta
+    occupata su uno dei due indirizzi si salta. Solo IPv4 se il sistema non ha IPv6."""
+    try:
+        return await asyncio.start_server(handle, ["127.0.0.1", "::1"], port)
+    except OSError as e:
+        if e.errno == errno.EADDRINUSE:
+            raise
+    return await asyncio.start_server(handle, "127.0.0.1", port)
+
+
 async def _main(project: Project, cfg: Optional[dict], port: int, open_browser: bool) -> None:
     dash = WebDashboard(project)
     server = None
     for p in range(port, port + 20):
         try:
-            server = await asyncio.start_server(dash.handle, "127.0.0.1", p)
+            server = await _listen(dash.handle, p)
         except OSError:
             continue
         if p != port:

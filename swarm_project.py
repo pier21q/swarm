@@ -26,7 +26,8 @@ import time
 from pathlib import Path
 from typing import Callable, Deque, Dict, List, Optional
 
-from swarm_advice import EFFORTS, MODELS, assign_efforts, phase_budget, planner_brief, recommend
+from swarm_advice import (EFFORTS, MODELS, assign_efforts, phase_budget, planner_brief, planner_budget,
+                          recommend)
 import swarm_publish as pub
 from swarm_core import CLAUDE_MISSING, ENV_STRIP, MAX_WORKERS, Swarm, describe_tool, find_claude, git, git_id, short
 
@@ -317,7 +318,8 @@ class Project:
             path = str(repo)
         self.settings = {"idea": idea[:4000], "path": path, "model": model, "budget": budget,
                          "max_workers": max_workers, "allow_build": bool(settings.get("allow_build")),
-                         "difficulty": rec["difficulty"], "quality": rec["quality"]}
+                         "difficulty": rec["difficulty"], "quality": rec["quality"],
+                         "planner_budget": planner_budget(model, rec["planner_effort"])}
         self.advice = rec
         self.repo = repo
         if self.demo:  # la demo fa finta di lavorare su un progetto esistente, sul branch main
@@ -436,6 +438,7 @@ class Project:
         cmd = [claude, "-p", "--output-format", "stream-json", "--verbose",  # il prompt va su stdin
                "--model", s["model"], "--permission-mode", "dontAsk",
                "--effort", self.advice["planner_effort"],
+               "--max-budget-usd", str(s["planner_budget"]),
                "--allowedTools", "Read", "Glob", "Grep"]
         env = {k: v for k, v in os.environ.items() if k not in ENV_STRIP}
         proc = await asyncio.create_subprocess_exec(
@@ -450,7 +453,7 @@ class Project:
         finally:
             proc.stdin.close()
         err_task = asyncio.ensure_future(proc.stderr.read())
-        result, is_error, got_result = "", False, False
+        result, is_error, got_result, subtype = "", False, False, ""
         while True:
             line = await proc.stdout.readline()
             if not line:
@@ -467,6 +470,7 @@ class Project:
                 got_result = True
                 result = str(ev.get("result") or "")
                 is_error = bool(ev.get("is_error"))
+                subtype = str(ev.get("subtype") or "")
                 self.planner_cost += float(ev.get("total_cost_usd") or 0)
         rc = await proc.wait()
         stderr = (await err_task).decode("utf-8", "replace").strip()
@@ -476,6 +480,10 @@ class Project:
             self.cost_missing.append("pianificatore")
         if self.stop_requested:
             return ""
+        if "budget" in subtype:
+            raise RuntimeError(
+                f"il pianificatore ha raggiunto il suo tetto di spesa (${s['planner_budget']:.2f}) senza "
+                "finire il piano. Riprova con un'idea più circoscritta o una cartella più piccola.")
         if is_error or rc != 0:
             raise RuntimeError(result or (stderr.splitlines()[-1] if stderr else f"exit code {rc}"))
         return result
